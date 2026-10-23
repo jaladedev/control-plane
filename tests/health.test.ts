@@ -10,7 +10,7 @@ describe("probeSchool", () => {
     const result = await probeSchool("School.Example.com", { fetchImpl });
     expect(result).toMatchObject({ ok: true, httpStatus: 200, version: "abc1234", error: null });
     const [url, init] = fetchImpl.mock.calls[0];
-    expect(url).toBe("https://school.example.com/api/health");
+    expect(url).toBe("https://school.example.com/api/health?deep=1");
     expect(init.redirect).toBe("manual");
   });
 
@@ -67,6 +67,24 @@ describe("probeSchool", () => {
       expect(result.ok).toBe(false);
     }
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("fails a school that reports a different slug than the registry's", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(json({ ok: true, version: "abc", slug: "blue" }));
+    const result = await probeSchool("school.example.com", { fetchImpl, expectedSlug: "green" });
+    expect(result).toMatchObject({ ok: false, httpStatus: 200, version: "abc" });
+    expect(result.error).toBe('Wrong school: it reports "blue", expected "green".');
+  });
+
+  it("passes when the slug matches, or when an older school reports none", async () => {
+    const same = vi.fn().mockResolvedValue(json({ ok: true, slug: "green" }));
+    expect(
+      (await probeSchool("school.example.com", { fetchImpl: same, expectedSlug: "green" })).ok
+    ).toBe(true);
+    const none = vi.fn().mockResolvedValue(json({ ok: true, version: "old" }));
+    expect(
+      (await probeSchool("school.example.com", { fetchImpl: none, expectedSlug: "green" })).ok
+    ).toBe(true);
   });
 
   it("clips an oversized version string", async () => {

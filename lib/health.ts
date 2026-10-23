@@ -33,13 +33,17 @@ async function readLimited(res: Response): Promise<string> {
 const clip = (text: string, n: number) => (text.length > n ? `${text.slice(0, n)}…` : text);
 
 /**
- * GET https://<hostname>/api/health. Healthy means HTTP 200 with {"ok": true}.
- * Never throws. Redirects are not followed, so a hostname cannot bounce the
+ * GET https://<hostname>/api/health?deep=1. The deep check makes the school
+ * query its own database (and school_license) too. Healthy means HTTP 200
+ * with {"ok": true}; when expectedSlug is given and the school reports a
+ * different slug, it is unhealthy ("wrong school": an env file or hostname
+ * pointing at another school). A school that reports no slug (an older image)
+ * is not failed for that. Never throws. Redirects are not followed, so a hostname cannot bounce the
  * check to somewhere else.
  */
 export async function probeSchool(
   hostname: string,
-  opts: { fetchImpl?: typeof fetch; timeoutMs?: number } = {}
+  opts: { fetchImpl?: typeof fetch; timeoutMs?: number; expectedSlug?: string } = {}
 ): Promise<ProbeResult> {
   const started = Date.now();
   const done = (r: Omit<ProbeResult, "latencyMs">): ProbeResult => ({
@@ -60,7 +64,7 @@ export async function probeSchool(
   }
 
   try {
-    const res = await (opts.fetchImpl ?? fetch)(`https://${host}/api/health`, {
+    const res = await (opts.fetchImpl ?? fetch)(`https://${host}/api/health?deep=1`, {
       method: "GET",
       redirect: "manual",
       cache: "no-store",
@@ -68,7 +72,7 @@ export async function probeSchool(
       signal: AbortSignal.timeout(opts.timeoutMs ?? 8000),
     });
     const text = await readLimited(res);
-    let body: { ok?: unknown; version?: unknown; error?: unknown } | null = null;
+    let body: { ok?: unknown; version?: unknown; error?: unknown; slug?: unknown } | null = null;
     try {
       body = JSON.parse(text);
     } catch {
@@ -85,6 +89,18 @@ export async function probeSchool(
       });
     }
     if (res.status === 200 && body?.ok === true) {
+      const reported = typeof body.slug === "string" ? body.slug : null;
+      if (opts.expectedSlug && reported && reported !== opts.expectedSlug) {
+        return done({
+          ok: false,
+          httpStatus: 200,
+          version,
+          error: clip(
+            `Wrong school: it reports "${clip(reported, 40)}", expected "${opts.expectedSlug}".`,
+            300
+          ),
+        });
+      }
       return done({ ok: true, httpStatus: 200, version, error: null });
     }
     const detail =

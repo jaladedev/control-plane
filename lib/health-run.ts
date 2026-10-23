@@ -19,7 +19,8 @@ const CONCURRENCY = 8;
 
 export async function runHealthChecks(
   admin: SupabaseClient,
-  probe: (hostname: string) => Promise<ProbeResult> = probeSchool
+  probe: (hostname: string, expectedSlug?: string) => Promise<ProbeResult> = (h, slug) =>
+    probeSchool(h, { expectedSlug: slug })
 ): Promise<RunSummary> {
   const { data, error } = await admin
     .from("schools")
@@ -34,7 +35,7 @@ export async function runHealthChecks(
     const batch = schools.slice(i, i + CONCURRENCY);
     await Promise.all(
       batch.map(async (school) => {
-        const result = await probe(school.hostnames[0]);
+        const result = await probe(school.hostnames[0], school.slug);
         const { status, failures } = nextHealth(school.consecutive_failures, result.ok);
         const now = new Date().toISOString();
 

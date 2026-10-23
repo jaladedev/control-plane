@@ -45,10 +45,16 @@ describe("runHealthChecks", () => {
       },
       { id: "s2", slug: "blue", hostnames: ["blue.example.com"], consecutive_failures: 0 },
     ]);
-    const probe = vi.fn(async (host: string) => (host.startsWith("green") ? ok : bad));
+    const probe = vi.fn(async (host: string, _slug?: string) =>
+      host.startsWith("green") ? ok : bad
+    );
 
     const summary = await runHealthChecks(admin, probe);
 
+    expect(probe.mock.calls.map((c) => [c[0], c[1]]).sort()).toEqual([
+      ["blue.example.com", "blue"],
+      ["green.example.com", "green"],
+    ]);
     expect(probe.mock.calls.map((c) => c[0]).sort()).toEqual([
       "blue.example.com",
       "green.example.com",
