@@ -1,0 +1,33 @@
+name: Keep Supabase project awake
+
+# The control plane runs on Supabase's Free plan, which pauses a project after
+# a week without activity. A paused project would take the dashboard down.
+# This calls the keepalive() function (see the foundations migration) every
+# three days. Add two repository secrets: SUPABASE_URL and SUPABASE_ANON_KEY.
+
+on:
+  schedule:
+    - cron: "17 6 */3 * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call keepalive()
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "Set the SUPABASE_URL and SUPABASE_ANON_KEY repository secrets." >&2
+            exit 1
+          fi
+          status=$(curl -sS -o response.json -w "%{http_code}" -X POST \
+            "$SUPABASE_URL/rest/v1/rpc/keepalive" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          cat response.json; echo
+          test "$status" = "200"

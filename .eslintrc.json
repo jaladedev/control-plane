@@ -1,0 +1,22 @@
+{
+  "extends": "next/core-web-vitals",
+  "rules": {
+    "no-restricted-imports": [
+      "error",
+      {
+        "paths": [
+          {
+            "name": "@/lib/supabase/admin",
+            "message": "createAdminClient() bypasses RLS with the service_role key. Only import it from lib/actions/*, lib/auth/*, lib/audit.ts or app/api/* (see the override below). Prefer the RLS-scoped client from lib/supabase/server."
+          }
+        ]
+      }
+    ]
+  },
+  "overrides": [
+    {
+      "files": ["lib/actions/**", "lib/auth/**", "lib/audit.ts", "app/api/**", "tests/**"],
+      "rules": { "no-restricted-imports": "off" }
+    }
+  ]
+}
