@@ -6,6 +6,7 @@ import { SCHOOL_STATUSES, licenseState } from "@/lib/schools";
 import type { HealthStatus } from "@/lib/health";
 import { SchoolForm } from "@/components/SchoolForm";
 import { LicenseForm } from "@/components/LicenseForm";
+import { SupportLink } from "@/components/SupportLink";
 import { HealthBadge, LicenseBadge, ago } from "@/components/badges";
 import { setStatusAction, updateSchoolAction } from "@/app/schools/actions";
 
@@ -45,6 +46,7 @@ export default async function SchoolPage({
 
   const isOwner = actor.role === "owner";
   const canLicense = isOwner || actor.role === "finance";
+  const canSupport = (isOwner || actor.role === "support") && school.status !== "archived";
 
   return (
     <div className="space-y-8">
@@ -99,6 +101,13 @@ export default async function SchoolPage({
         <section className="space-y-3">
           <h2 className="font-semibold">Licence</h2>
           <LicenseForm school={school} isOwner={isOwner} />
+        </section>
+      )}
+
+      {canSupport && (
+        <section className="space-y-3">
+          <h2 className="font-semibold">Support session</h2>
+          <SupportLink schoolId={school.id} />
         </section>
       )}
 

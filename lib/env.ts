@@ -12,6 +12,10 @@ const schema = z.object({
   // JSON map of school slug -> that school's service-role key, used to push
   // licences. Optional: without it licence pushes are refused.
   SCHOOL_SERVICE_KEYS: z.string().optional(),
+  // JSON map of school slug -> that school's IMPERSONATION_SIGNING_SECRET, used
+  // to sign read-only support links. Optional: without it support links are
+  // refused. Interim, like SCHOOL_SERVICE_KEYS.
+  SCHOOL_SIGNING_SECRETS: z.string().optional(),
 });
 
 const parsed = schema.safeParse({
@@ -20,6 +24,7 @@ const parsed = schema.safeParse({
   SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
   CRON_SECRET: process.env.CRON_SECRET || undefined,
   SCHOOL_SERVICE_KEYS: process.env.SCHOOL_SERVICE_KEYS || undefined,
+  SCHOOL_SIGNING_SECRETS: process.env.SCHOOL_SIGNING_SECRETS || undefined,
 });
 
 if (!parsed.success) {

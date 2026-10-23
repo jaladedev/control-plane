@@ -72,6 +72,25 @@ school. Keep it out of logs and screenshots, and replace it with real secret
 storage before you host many schools. Without the variable, pushes are refused
 before anything is saved.
 
+### Read-only support sessions
+
+On a school's page, owners and support can press **Create support link**. The
+control plane signs a link with that school's own `IMPERSONATION_SIGNING_SECRET`
+(the value in the school's env file) and shows it once. The link opens the
+school's dashboard as its read-only support account; it works once and expires
+after 5 minutes. The request is audited here before the link is made, and the
+audit row's `link_id` matches the id the school records, so the two logs line
+up. The token itself is never logged or stored. Finance cannot create links;
+archived schools are refused.
+
+Secrets live in the `SCHOOL_SIGNING_SECRETS` environment variable as JSON,
+`{"greenfield":"<signing secret, 32+ characters>"}`. This is the same interim
+design as `SCHOOL_SERVICE_KEYS` and adds to the same weak point: whoever can
+read this app's environment can open a support session on any school. Replace
+both with real secret storage before hosting many schools. `lib/impersonation.ts`
+is an exact copy of school_app's file of the same name; both repos' tests assert
+the same literal token, so a change to the format on either side fails a test.
+
 ### Scheduling the health run
 
 `.github/workflows/health.yml` calls the route every 10 minutes. Add repository

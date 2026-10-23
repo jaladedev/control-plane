@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { ZodError } from "zod";
 import { createSchool, setSchoolStatus, updateSchool } from "@/lib/actions/schools";
 import { pushLicense, revokeLicense, setLicense } from "@/lib/actions/license";
+import { createSupportLink } from "@/lib/actions/support";
 
 // Form actions for the schools screens: each does its work through the guarded
 // functions in lib/actions/schools.ts and comes back with ?ok or ?error=<text>.
@@ -85,4 +86,16 @@ export async function revokeLicenseAction(formData: FormData) {
   revalidatePath("/");
   revalidatePath(`/schools/${id}`);
   redirect(`/schools/${id}?ok=revoked`);
+}
+
+// Returns the link in the response body instead of redirecting, so the token
+// never appears in a URL, a redirect or the page's own address bar.
+export async function createSupportLinkAction(
+  schoolId: string
+): Promise<{ url: string; expiresAt: string } | { error: string }> {
+  try {
+    return await createSupportLink(schoolId);
+  } catch (error) {
+    return { error: message(error) };
+  }
 }
