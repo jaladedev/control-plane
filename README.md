@@ -113,9 +113,10 @@ second layer, not a replacement.
   `.github/workflows/keepalive.yml` calls `keepalive()` every three days; add the
   repository secrets `SUPABASE_URL` and `SUPABASE_ANON_KEY`. Check on the
   Supabase dashboard that the project stays active after the first week.
-- I have not confirmed what backups the Free plan includes. Until you have, treat
-  the control-plane database as unbacked-up: the plan's M6 backup work (a scheduled
-  dump to R2) should cover it too.
+- I have not confirmed what backups the Free plan includes. Treat the control-plane
+  database as unbacked-up until the daily encrypted dump to R2 (`backup.yml`,
+  `scripts/backup.sh`) has run once and you have done the restore drill in
+  `docs/backup-restore.md`. School databases are not covered yet.
 
 ## Checks
 

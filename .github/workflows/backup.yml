@@ -1,0 +1,63 @@
+name: Back up the control-plane database
+
+# Daily encrypted dump of the control plane's own Supabase database to R2
+# (scripts/backup.sh). Restore steps: docs/backup-restore.md.
+#
+# Repository secrets:
+#   CONTROL_PLANE_DB_URL  the SESSION POOLER connection string (Project
+#                         Settings > Database > Connection string > Session
+#                         pooler). GitHub runners are IPv4-only and the direct
+#                         db.<ref>.supabase.co host is IPv6-only.
+#   BACKUP_AGE_RECIPIENT  age PUBLIC key (age1...). Make the pair on your own
+#                         machine with `age-keygen`; keep the private key
+#                         offline and somewhere other than this repo or R2.
+#   BACKUP_R2_ENDPOINT, BACKUP_R2_BUCKET, BACKUP_R2_ACCESS_KEY_ID,
+#   BACKUP_R2_SECRET_ACCESS_KEY
+#                         a bucket and an API token used ONLY for backups
+#                         (object read and write on that bucket), separate
+#                         from any school's.
+# A failed run emails the repository's Actions notification recipients; check
+# that those are turned on.
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pg_dump 17 and age
+        run: |
+          # The project runs Postgres 17; pg_dump must be at least that new.
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-17 age
+          /usr/lib/postgresql/17/bin/pg_dump --version
+
+      - name: Dump, encrypt, upload, prune
+        env:
+          DATABASE_URL: ${{ secrets.CONTROL_PLANE_DB_URL }}
+          AGE_RECIPIENT: ${{ secrets.BACKUP_AGE_RECIPIENT }}
+          R2_ENDPOINT: ${{ secrets.BACKUP_R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.BACKUP_R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.BACKUP_R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_R2_SECRET_ACCESS_KEY }}
+        run: |
+          export PATH=/usr/lib/postgresql/17/bin:$PATH
+          bash scripts/backup.sh
