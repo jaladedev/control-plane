@@ -5,9 +5,17 @@ const go = (to: string) => ({ action: "redirect", to });
 const allow = { action: "allow" };
 
 describe("decideAccess", () => {
-  it("lets the health probe through for anyone", () => {
-    expect(decideAccess({ path: "/api/health", signedIn: false, aal: null })).toEqual(allow);
-    expect(decideAccess({ path: "/api/health", signedIn: true, aal: "aal1" })).toEqual(allow);
+  it("lets the health probe and the scheduler's route through for anyone", () => {
+    for (const path of ["/api/health", "/api/cron/health"]) {
+      expect(decideAccess({ path, signedIn: false, aal: null })).toEqual(allow);
+      expect(decideAccess({ path, signedIn: true, aal: "aal1" })).toEqual(allow);
+    }
+  });
+
+  it("does not open anything else under /api/cron", () => {
+    expect(decideAccess({ path: "/api/cron/other", signedIn: false, aal: null })).toEqual(
+      go("/login")
+    );
   });
 
   describe("signed out", () => {

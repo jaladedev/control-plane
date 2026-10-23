@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const results = [];
+const CRON_SECRET = "c".repeat(40);
 function check(name, ok, detail = "") {
   results.push(ok);
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${ok || !detail ? "" : `\n      ${detail}`}`);
@@ -32,7 +33,26 @@ function freePort() {
 
 // A stand-in for the control plane's Supabase. `state.role` is what
 // dashboard_role() returns (null means "not an active dashboard user").
-const state = { role: "owner", userOk: true };
+const state = { role: "owner", userOk: true, withSchool: false };
+const SCHOOL_ID = "30000000-0000-4000-8000-000000000001";
+const SCHOOL = {
+  id: SCHOOL_ID,
+  slug: "greenfield",
+  name: "Greenfield School",
+  status: "active",
+  hostnames: ["green.example.com"],
+  hosting_plan: "pro",
+  included_students: 300,
+  image_tag: "abc1234",
+  health_status: "up",
+  last_checked_at: new Date().toISOString(),
+  last_ok_at: new Date().toISOString(),
+  last_error: null,
+  license_version: 0,
+  license_is_trial: false,
+  license_valid_until: null,
+  license_grace_until: null,
+};
 async function startMock() {
   const port = await freePort();
   const server = http.createServer((req, res) => {
@@ -60,6 +80,8 @@ async function startMock() {
       res.end();
     } else if (url.startsWith("/rest/v1/rpc/dashboard_role")) {
       res.end(JSON.stringify(state.role));
+    } else if (url.startsWith("/rest/v1/schools") && state.withSchool) {
+      res.end(JSON.stringify([SCHOOL]));
     } else if (url.startsWith("/rest/v1/")) {
       res.end("[]");
     } else {
@@ -107,6 +129,7 @@ async function main() {
         SUPABASE_URL: `http://127.0.0.1:${mock.port}`,
         SUPABASE_ANON_KEY: "anon",
         SUPABASE_SERVICE_ROLE_KEY: "service",
+        CRON_SECRET: CRON_SECRET,
         NEXT_TELEMETRY_DISABLED: "1",
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -139,7 +162,31 @@ async function main() {
 
     // Signed out
     check("health probe works without signing in", (await get("/api/health")).status === 200);
-    for (const p of ["/", "/users", "/audit", "/mfa"]) {
+
+    // The scheduler's route: reachable without a session, guarded by its secret
+    const cron = (authorization) =>
+      fetch(`${base}/api/cron/health`, {
+        method: "POST",
+        redirect: "manual",
+        headers: authorization ? { authorization } : {},
+      });
+    for (const header of [undefined, "Bearer wrong", CRON_SECRET]) {
+      const res = await cron(header);
+      check(
+        `cron route refuses ${header === undefined ? "no header" : header === CRON_SECRET ? "a bare secret" : "a wrong secret"}`,
+        res.status === 401,
+        `${res.status}`
+      );
+    }
+    const cronOk = await cron(`Bearer ${CRON_SECRET}`);
+    const cronBody = await cronOk.json().catch(() => ({}));
+    check(
+      "cron route runs with the right secret (no schools: nothing checked)",
+      cronOk.status === 200 && cronBody.ok === true && cronBody.checked === 0,
+      `${cronOk.status} ${JSON.stringify(cronBody)}`
+    );
+    check("cron route is POST only", (await get("/api/cron/health")).status === 405);
+    for (const p of ["/", "/users", "/audit", "/mfa", "/schools/new", `/schools/${SCHOOL_ID}`]) {
       const res = await get(p);
       check(
         `signed out: ${p} goes to /login`,
@@ -198,6 +245,29 @@ async function main() {
       "owner: nav shows Users and Audit log",
       homeHtml.includes("Users") && homeHtml.includes("Audit log")
     );
+    check("owner: Add school link is shown", homeHtml.includes('href="/schools/new"'));
+    check("owner: /schools/new opens", (await get("/schools/new", aal2)).status === 200);
+    check(
+      "owner: an unknown school is a 404",
+      (await get(`/schools/${SCHOOL_ID}`, aal2)).status === 404
+    );
+    state.withSchool = true;
+    const listed = await (await get("/", aal2)).text();
+    check(
+      "owner: a registered school is listed with its health and version",
+      listed.includes("Greenfield School") && listed.includes(">up<") && listed.includes("abc1234"),
+      listed.slice(0, 200)
+    );
+    const detail = await get(`/schools/${SCHOOL_ID}`, aal2);
+    const detailHtml = await detail.text();
+    check(
+      "owner: school page opens with the edit form and status control",
+      detail.status === 200 &&
+        detailHtml.includes("Save changes") &&
+        detailHtml.includes("Recent health checks"),
+      `${detail.status}`
+    );
+    state.withSchool = false;
     check("owner: /users opens", (await get("/users", aal2)).status === 200);
     check("owner: /audit opens", (await get("/audit", aal2)).status === 200);
     check(
@@ -215,7 +285,19 @@ async function main() {
         `${role}: nav hides Users and Audit log`,
         !html.includes('href="/users"') && !html.includes('href="/audit"')
       );
-      for (const p of ["/users", "/audit"]) {
+      check(`${role}: no Add school link`, !html.includes('href="/schools/new"'));
+      state.withSchool = true;
+      const dh = await get(`/schools/${SCHOOL_ID}`, aal2);
+      const dhHtml = await dh.text();
+      check(
+        `${role}: school page opens read-only`,
+        dh.status === 200 &&
+          dhHtml.includes("Greenfield School") &&
+          !dhHtml.includes("Save changes"),
+        `${dh.status}`
+      );
+      state.withSchool = false;
+      for (const p of ["/users", "/audit", "/schools/new"]) {
         const res = await get(p, aal2);
         check(
           `${role}: ${p} sends them home`,

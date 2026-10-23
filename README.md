@@ -2,7 +2,7 @@
 
 Dashboard for running the hosted school product: a registry of schools and, in
 later milestones, health, licences, deploys, billing and audited support access.
-This is **M0 (foundations)** from the project plan. It is its own app with its
+This is **M0 (foundations) plus M1 (schools registry and health)** from the project plan. It is its own app with its
 own Supabase project, kept separate from every school.
 
 ## What M0 includes
@@ -22,7 +22,40 @@ own Supabase project, kept separate from every school.
   active owner.
 - The `schools` table and an empty schools list, ready for M1.
 
-Not in M0: the job queue, secrets-manager access, anything that talks to a
+## What M1 adds
+
+- A real **schools registry**: owners add a school (slug, name, hostnames, plan,
+  included students, billing contact, Supabase project ref, R2 bucket,
+  container name) and edit it later. The slug is fixed at creation because it
+  must match the school's `SCHOOL_SLUG`. Every change writes an audit row first,
+  recording only the fields that changed. Finance and support can view.
+- **Health checks.** `POST /api/cron/health` probes the first hostname of every
+  non-archived school at `https://<host>/api/health` (healthy means HTTP 200
+  with `ok: true`), stores each result in `health_checks` (30 days kept), and
+  sets the school's status: one failure is `degraded`, two in a row is `down`,
+  a success is `up`. The school's reported image tag becomes its running
+  version. Redirects are not followed, and hostnames must be public DNS names
+  (no IPs, ports, paths or private suffixes), so the probe cannot be pointed at
+  internal addresses.
+- **Licence columns** on each school (`license_version`, valid-until,
+  grace-until, trial flag) mirroring the school's `school_license`, shown with a
+  status derived from the clock. They are read-only for now: setting them and
+  pushing with `set_license` is M2.
+
+### Scheduling the health run
+
+`.github/workflows/health.yml` calls the route every 10 minutes. Add repository
+secrets `CONTROL_PLANE_URL` (no trailing slash) and `CRON_SECRET`, and set the
+same `CRON_SECRET` (32+ characters, `openssl rand -hex 32`) in the app's
+environment. Without `CRON_SECRET` the route refuses every call. GitHub's
+scheduler can run late or skip runs, so a gap in the history is not by itself an
+outage. If the app is behind Cloudflare Access, add a bypass policy for the path
+`/api/cron/health`; the route checks its own secret.
+
+The health run is not written to the audit log (it would add a row every ten
+minutes); it only writes health data. Anything an actor does still is.
+
+Not in M0 or M1: the job queue, secrets-manager access, anything that talks to a
 school's database, Cloudflare Access and the VPS (set up outside this repo).
 
 ## Setup

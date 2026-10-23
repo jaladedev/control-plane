@@ -61,9 +61,15 @@ if (countError) {
   console.error(`Could not check for existing owners: ${describe(countError)}`);
   console.error(`Tried: ${new URL(url).origin}`);
   if (/fetch failed/i.test(countError.message)) {
-    console.error(
-      "That host could not be reached. Check SUPABASE_URL against Project Settings, API in the Supabase dashboard."
-    );
+    // supabase-js drops the real network error, so probe the host directly and
+    // print what Node itself says (ENOTFOUND, ETIMEDOUT, certificate errors...).
+    try {
+      const res = await fetch(`${url}/auth/v1/health`, { headers: { apikey: key } });
+      console.error(`Probe: ${res.status} ${res.statusText} (the host is reachable from Node).`);
+    } catch (probeError) {
+      console.error(`Probe failed: ${describe(probeError)}`);
+      console.error(`Node ${process.version}`);
+    }
   }
   process.exit(1);
 }

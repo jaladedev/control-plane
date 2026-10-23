@@ -6,12 +6,16 @@ const schema = z.object({
   SUPABASE_URL: z.string().url(),
   SUPABASE_ANON_KEY: z.string().min(1),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
+  // Bearer token for the scheduled health run. Optional: without it the cron
+  // route refuses every call.
+  CRON_SECRET: z.string().min(32, "Use at least 32 characters.").optional(),
 });
 
 const parsed = schema.safeParse({
   SUPABASE_URL: process.env.SUPABASE_URL,
   SUPABASE_ANON_KEY: process.env.SUPABASE_ANON_KEY,
   SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  CRON_SECRET: process.env.CRON_SECRET || undefined,
 });
 
 if (!parsed.success) {

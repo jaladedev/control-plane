@@ -1,0 +1,37 @@
+name: School health checks
+
+# Every few minutes, asks the deployed control plane to probe each school's
+# /api/health and record the result. GitHub's scheduler can run late or skip a
+# run under load, so a gap in the history is not by itself an outage.
+#
+# Repository secrets: CONTROL_PLANE_URL (for example https://cp.example.com, no
+# trailing slash) and CRON_SECRET (the same value the app has; at least 32
+# characters, for example `openssl rand -hex 32`).
+#
+# If the app is behind Cloudflare Access, add a bypass policy for the path
+# /api/cron/health, or this request is stopped at the door. The route checks
+# its own bearer secret.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run the health checks
+        env:
+          CONTROL_PLANE_URL: ${{ secrets.CONTROL_PLANE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CONTROL_PLANE_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "Set the CONTROL_PLANE_URL and CRON_SECRET repository secrets." >&2
+            exit 1
+          fi
+          status=$(curl -sS --max-time 90 -o response.json -w "%{http_code}" -X POST \
+            "$CONTROL_PLANE_URL/api/cron/health" \
+            -H "Authorization: Bearer $CRON_SECRET")
+          cat response.json; echo
+          test "$status" = "200"
