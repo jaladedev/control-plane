@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { SCHOOL_STATUSES, licenseState } from "@/lib/schools";
 import type { HealthStatus } from "@/lib/health";
 import { SchoolForm } from "@/components/SchoolForm";
+import { LicenseForm } from "@/components/LicenseForm";
 import { HealthBadge, LicenseBadge, ago } from "@/components/badges";
 import { setStatusAction, updateSchoolAction } from "@/app/schools/actions";
 
@@ -12,6 +13,9 @@ const OK: Record<string, string> = {
   created: "School registered. Health checks start with the next scheduled run.",
   saved: "Changes saved.",
   status: "Status updated.",
+  licensed: "Licence saved and delivered to the school.",
+  pushed: "Licence delivered to the school.",
+  revoked: "Licence revoked. The school is now read-only.",
 };
 
 const fmt = (iso: string | null) => (iso ? iso.slice(0, 16).replace("T", " ") + " UTC" : "—");
@@ -40,6 +44,7 @@ export default async function SchoolPage({
     .limit(20);
 
   const isOwner = actor.role === "owner";
+  const canLicense = isOwner || actor.role === "finance";
 
   return (
     <div className="space-y-8">
@@ -81,10 +86,21 @@ export default async function SchoolPage({
             {fmt(school.license_grace_until)}. Version {school.license_version}.
           </p>
           <p className="mt-1 text-xs text-slate-500">
-            Read-only here. Setting and pushing licences arrives with M2.
+            {school.license_version === 0
+              ? "No licence set yet."
+              : school.license_version > school.license_pushed_version
+                ? "Saved but not yet delivered to the school."
+                : `Delivered to the school ${ago(school.license_pushed_at)}.`}
           </p>
         </div>
       </section>
+
+      {canLicense && (
+        <section className="space-y-3">
+          <h2 className="font-semibold">Licence</h2>
+          <LicenseForm school={school} isOwner={isOwner} />
+        </section>
+      )}
 
       {isOwner ? (
         <>
@@ -117,8 +133,8 @@ export default async function SchoolPage({
               </button>
             </form>
             <p className="text-xs text-slate-500">
-              Status is a record here. It does not yet stop or restrict the school; that is a
-              licence push (M2). Archived schools are no longer health-checked.
+              Status is a record here. It does not stop or restrict the school; use Revoke licence
+              for that. Archived schools are no longer health-checked.
             </p>
           </section>
         </>

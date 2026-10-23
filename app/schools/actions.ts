@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { ZodError } from "zod";
 import { createSchool, setSchoolStatus, updateSchool } from "@/lib/actions/schools";
+import { pushLicense, revokeLicense, setLicense } from "@/lib/actions/license";
 
 // Form actions for the schools screens: each does its work through the guarded
 // functions in lib/actions/schools.ts and comes back with ?ok or ?error=<text>.
@@ -48,4 +49,40 @@ export async function setStatusAction(formData: FormData) {
   revalidatePath("/");
   revalidatePath(`/schools/${id}`);
   redirect(`/schools/${id}?ok=status`);
+}
+
+export async function setLicenseAction(formData: FormData) {
+  const id = String(formData.get("schoolId") ?? "");
+  try {
+    await setLicense(id, fields(formData));
+  } catch (error) {
+    redirect(`/schools/${encodeURIComponent(id)}?error=${encodeURIComponent(message(error))}`);
+  }
+  revalidatePath("/");
+  revalidatePath(`/schools/${id}`);
+  redirect(`/schools/${id}?ok=licensed`);
+}
+
+export async function pushLicenseAction(formData: FormData) {
+  const id = String(formData.get("schoolId") ?? "");
+  try {
+    await pushLicense(id);
+  } catch (error) {
+    redirect(`/schools/${encodeURIComponent(id)}?error=${encodeURIComponent(message(error))}`);
+  }
+  revalidatePath("/");
+  revalidatePath(`/schools/${id}`);
+  redirect(`/schools/${id}?ok=pushed`);
+}
+
+export async function revokeLicenseAction(formData: FormData) {
+  const id = String(formData.get("schoolId") ?? "");
+  try {
+    await revokeLicense(id, formData.get("confirm"));
+  } catch (error) {
+    redirect(`/schools/${encodeURIComponent(id)}?error=${encodeURIComponent(message(error))}`);
+  }
+  revalidatePath("/");
+  revalidatePath(`/schools/${id}`);
+  redirect(`/schools/${id}?ok=revoked`);
 }

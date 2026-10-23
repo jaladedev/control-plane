@@ -48,7 +48,12 @@ const SCHOOL = {
   last_checked_at: new Date().toISOString(),
   last_ok_at: new Date().toISOString(),
   last_error: null,
-  license_version: 0,
+  license_version: 2,
+  license_pushed_version: 2,
+  license_pushed_at: new Date().toISOString(),
+  license_push_error: null,
+  license_session: "2026/2027",
+  features: [],
   license_is_trial: false,
   license_valid_until: null,
   license_grace_until: null,
@@ -267,6 +272,10 @@ async function main() {
         detailHtml.includes("Recent health checks"),
       `${detail.status}`
     );
+    check(
+      "owner: licence form and revoke control are shown",
+      detailHtml.includes("Save and push new version") && detailHtml.includes("Revoke licence")
+    );
     state.withSchool = false;
     check("owner: /users opens", (await get("/users", aal2)).status === 200);
     check("owner: /audit opens", (await get("/audit", aal2)).status === 200);
@@ -289,6 +298,12 @@ async function main() {
       state.withSchool = true;
       const dh = await get(`/schools/${SCHOOL_ID}`, aal2);
       const dhHtml = await dh.text();
+      check(
+        `${role}: licence form is ${role === "finance" ? "shown (no revoke)" : "hidden"}`,
+        role === "finance"
+          ? dhHtml.includes("Save and push new version") && !dhHtml.includes("Revoke licence")
+          : !dhHtml.includes("Save and push new version")
+      );
       check(
         `${role}: school page opens read-only`,
         dh.status === 200 &&

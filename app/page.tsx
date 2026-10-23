@@ -2,6 +2,7 @@ import Link from "next/link";
 import { requirePage } from "@/lib/auth/guards";
 import { createClient } from "@/lib/supabase/server";
 import { licenseState } from "@/lib/schools";
+import { isUnsynced } from "@/lib/licensing";
 import type { HealthStatus } from "@/lib/health";
 import { HealthBadge, LicenseBadge, ago } from "@/components/badges";
 
@@ -13,7 +14,7 @@ export default async function SchoolsPage() {
   const { data: schools, error } = await supabase
     .from("schools")
     .select(
-      "id, slug, name, status, hostnames, hosting_plan, image_tag, health_status, last_checked_at, last_error, license_valid_until, license_grace_until, license_is_trial, included_students"
+      "id, slug, name, status, hostnames, hosting_plan, image_tag, health_status, last_checked_at, last_error, license_valid_until, license_grace_until, license_is_trial, license_version, license_pushed_version, included_students"
     )
     .order("name");
 
@@ -72,6 +73,9 @@ export default async function SchoolsPage() {
                     <LicenseBadge state={licenseState(s)} />
                     {s.license_is_trial && (
                       <span className="ml-2 text-xs text-slate-500">trial</span>
+                    )}
+                    {isUnsynced(s) && (
+                      <span className="ml-2 text-xs font-medium text-amber-700">not delivered</span>
                     )}
                   </td>
                   <td className="px-3 py-2 font-mono text-xs">{s.image_tag ?? "—"}</td>

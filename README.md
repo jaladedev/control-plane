@@ -2,7 +2,7 @@
 
 Dashboard for running the hosted school product: a registry of schools and, in
 later milestones, health, licences, deploys, billing and audited support access.
-This is **M0 (foundations) plus M1 (schools registry and health)** from the project plan. It is its own app with its
+This is **M0 (foundations), M1 (schools registry and health) and M2 (licences)** from the project plan. It is its own app with its
 own Supabase project, kept separate from every school.
 
 ## What M0 includes
@@ -42,6 +42,36 @@ own Supabase project, kept separate from every school.
   status derived from the clock. They are read-only for now: setting them and
   pushing with `set_license` is M2.
 
+## What M2 adds
+
+- **Set a licence** on a school (owner or finance): trial or paid, academic
+  session, valid-until date (end of that day, UTC), grace days, student cap
+  (blank means none) and add-ons. Each save is a new, higher version. It is
+  stored on the school's registry row first, then pushed to the school's own
+  database with `set_license()`. The form prefills a 30-day trial with 14 days
+  of grace for a school with no licence.
+- **Delivery is tracked.** If the school rejects or cannot be reached, the
+  saved version stays, the error is shown, the list says "not delivered", and
+  **Retry push** re-sends the same version (a repeat is a harmless no-op on the
+  school's side). A push that the school ignores because it already has that
+  version or newer is reported as a conflict, not a success.
+- **Revoke** (owner only, needs a ticked box) ends validity and grace now, so
+  the school becomes read-only for everyone. Nothing is deleted. Setting a new
+  licence undoes it.
+- Every set, push and revoke writes its audit row first.
+
+### Licence pushes need each school's service key
+
+Pushing calls `set_license()`, which only the service role may run, so the
+control plane needs each school's service-role key. Until a secrets manager
+exists these live in the `SCHOOL_SERVICE_KEYS` environment variable as JSON,
+`{"greenfield":"<service-role-key>"}`, and the school's Supabase project ref
+(on its page here) gives the URL. **This makes the control plane's environment
+the most sensitive thing in the system**: whoever can read it can write to every
+school. Keep it out of logs and screenshots, and replace it with real secret
+storage before you host many schools. Without the variable, pushes are refused
+before anything is saved.
+
 ### Scheduling the health run
 
 `.github/workflows/health.yml` calls the route every 10 minutes. Add repository
@@ -55,7 +85,7 @@ outage. If the app is behind Cloudflare Access, add a bypass policy for the path
 The health run is not written to the audit log (it would add a row every ten
 minutes); it only writes health data. Anything an actor does still is.
 
-Not in M0 or M1: the job queue, secrets-manager access, anything that talks to a
+Not in M0, M1 or M2: the job queue, secrets-manager access, anything that talks to a
 school's database, Cloudflare Access and the VPS (set up outside this repo).
 
 ## Setup
