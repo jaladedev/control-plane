@@ -1,3 +1,6 @@
 .next
 node_modules
 package-lock.json
+
+# Planning documents are kept exactly as written.
+docs/plans/
