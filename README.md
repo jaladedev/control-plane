@@ -91,6 +91,13 @@ both with real secret storage before hosting many schools. `lib/impersonation.ts
 is an exact copy of school_app's file of the same name; both repos' tests assert
 the same literal token, so a change to the format on either side fails a test.
 
+### Deploying to the VPS
+
+`deploy/school-deploy` is the script the deploy worker will run over a restricted
+SSH key (create, deploy, roll back, remove, with a health check and automatic
+rollback). Setup, exit codes and what is still unverified are in
+`deploy/README.md`. Nothing in the dashboard calls it yet.
+
 ### Scheduling the health run
 
 `.github/workflows/health.yml` calls the route every 10 minutes. Add repository

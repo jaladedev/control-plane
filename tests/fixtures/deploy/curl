@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Fake curl: the "ip" is ip-<container>; answers like the school's /api/health
+# for whatever image that container runs, unless its tag is listed in $FAKE_DIR/unhealthy.
+set -u
+d="$FAKE_DIR"
+url="${*: -1}"
+host="${url#http://}"; host="${host%%:*}"; n="${host#ip-}"
+[ -d "$d/containers/$n" ] || exit 7
+image="$(cat "$d/containers/$n/image")"; tag="${image##*:}"
+if grep -qx "$tag" "$d/unhealthy" 2> /dev/null; then echo '{"ok":false}'; exit 22; fi
+echo "{\"ok\":true,\"version\":\"$tag\",\"slug\":\"${n#school-}\"}"

@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# school-deploy: the one script the control plane's deploy worker may run on the
+# VPS, as the forced command of a restricted SSH key (see deploy/README.md).
+#
+#   create <slug> <tag> <hostname>...   env file on stdin; starts the container
+#   deploy <slug> <tag>                 swap to <tag>; roll back if not healthy
+#   rollback <slug>                     back to the previous tag
+#   remove <slug>                       stop the container, drop route and env file
+#   status <slug>                       current/previous tag and whether it runs
+#
+# Everything arrives as words from the SSH client, so every word is checked
+# against a strict pattern before it is used, and nothing is ever passed to a
+# shell. Secrets only ever come in on stdin (never the command line).
+#
+# Exit codes: 0 ok | 2 usage | 3 precondition (unknown or duplicate school, no
+# previous tag) | 10 failed health check, rolled back to the old tag | 11 failed
+# and the rollback failed too | 12 another operation holds the school's lock |
+# 13 proxy route could not be loaded | 14 create failed, everything cleaned up |
+# 15 image could not be pulled, nothing changed.
+# The last line of stdout is always: RESULT {"slug":...,"action":...,"status":...,"tag":...}
+set -euo pipefail
+umask 077
+
+CONF="${SCHOOL_DEPLOY_CONF:-/etc/school-apps/deploy.conf}"
+if [ -f "$CONF" ]; then
+  # shellcheck source=/dev/null
+  . "$CONF"
+fi
+
+IMAGE_REPO="${IMAGE_REPO:-ghcr.io/jaladedev/school_app}"
+DOCKER="${DOCKER:-docker}"
+CURL="${CURL:-curl}"
+NETWORK="${NETWORK:-schools}"
+STATE_DIR="${STATE_DIR:-/var/lib/school-apps}"
+ENV_DIR="${ENV_DIR:-/etc/school-apps/env}"
+ROUTES_DIR="${ROUTES_DIR:-/etc/caddy/schools.d}"
+MEMORY="${MEMORY:-512m}"
+CPUS="${CPUS:-0.5}"
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-120}"
+HEALTH_INTERVAL="${HEALTH_INTERVAL:-3}"
+APP_PORT=3000
+
+ACTION=""
+SLUG=""
+TAG=""
+
+emit() { # status, tag
+  printf 'RESULT {"slug":"%s","action":"%s","status":"%s","tag":"%s"}\n' "$SLUG" "$ACTION" "$1" "${2:-}"
+}
+die() { # code, message, [status]
+  echo "ERROR: $2" >&2
+  log "failed: $2"
+  emit "${3:-error}" "$TAG"
+  exit "$1"
+}
+log() {
+  mkdir -p "$STATE_DIR"
+  printf '%s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${SLUG:--}" "${ACTION:--}" "$1" >> "$STATE_DIR/deploy.log" 2>/dev/null || true
+}
+
+valid_slug() { [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]]; }
+valid_tag() { [[ "$1" =~ ^[0-9a-f]{40}$ ]]; }   # a full git commit, as CI tags images
+valid_host() {
+  [ "${#1}" -le 253 ] && [[ "$1" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]
+}
+
+name() { echo "school-$SLUG"; }
+state_file() { echo "$STATE_DIR/$SLUG/$1"; }
+read_state() { cat "$(state_file "$1")" 2>/dev/null || true; }
+write_state() { mkdir -p "$STATE_DIR/$SLUG"; printf '%s\n' "$2" > "$(state_file "$1")"; }
+route_file() { echo "$ROUTES_DIR/$SLUG.caddy"; }
+
+take_lock() {
+  mkdir -p "$STATE_DIR/locks"
+  exec 9> "$STATE_DIR/locks/$SLUG.lock"
+  flock -n 9 || die 12 "Another operation is running for $SLUG." locked
+}
+
+caddy_reload() {
+  if [ -n "${CADDY_RELOAD:-}" ]; then
+    $CADDY_RELOAD
+  else
+    "$DOCKER" exec caddy caddy reload --config /etc/caddy/Caddyfile
+  fi
+}
+
+pull_image() { "$DOCKER" pull "$IMAGE_REPO:$1" > /dev/null; }
+
+start_container() { # tag
+  "$DOCKER" rm -f "$(name)" > /dev/null 2>&1 || true
+  "$DOCKER" run -d --name "$(name)" \
+    --network "$NETWORK" \
+    --restart unless-stopped \
+    --memory "$MEMORY" --cpus "$CPUS" --pids-limit 512 \
+    --cap-drop ALL --security-opt no-new-privileges \
+    --env-file "$ENV_DIR/$SLUG.env" \
+    --label "school=$SLUG" \
+    "$IMAGE_REPO:$1" > /dev/null
+}
+
+# Healthy means: the container is running, and /api/health answers ok with THIS
+# tag as its version and THIS school's slug. The shallow check on purpose: a
+# database blip must not fail (or roll back) a deploy.
+wait_healthy() { # tag
+  local tag="$1" ip body
+  local deadline=$((SECONDS + HEALTH_TIMEOUT))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    ip="$("$DOCKER" inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$(name)" 2> /dev/null || true)"
+    if [ -n "$ip" ]; then
+      body="$("$CURL" -fsS --max-time 5 "http://$ip:$APP_PORT/api/health" 2> /dev/null || true)"
+      if [[ "$body" == *'"ok":true'* && "$body" == *"\"version\":\"$tag\""* && "$body" == *"\"slug\":\"$SLUG\""* ]]; then
+        return 0
+      fi
+    fi
+    sleep "$HEALTH_INTERVAL"
+  done
+  return 1
+}
+
+run_tag() { start_container "$1" && wait_healthy "$1"; }
+
+cmd_create() {
+  local envdata line hosts=("$@")
+  if [ -d "$STATE_DIR/$SLUG" ] || [ -e "$ENV_DIR/$SLUG.env" ]; then
+    die 3 "$SLUG already exists." exists
+  fi
+  envdata="$(head -c 65537)"
+  [ "${#envdata}" -le 65536 ] || die 2 "Env file is too large."
+  local seen_slug=0
+  while IFS= read -r line; do
+    if [ -z "$line" ] || [[ "$line" =~ ^# ]]; then continue; fi
+    if ! [[ "$line" =~ ^[A-Z][A-Z0-9_]*=.*$ ]]; then die 2 "Env file has a line that is not KEY=value."; fi
+    if [[ "$line" =~ ^IMAGE_TAG= ]]; then die 2 "IMAGE_TAG is baked into the image; do not set it."; fi
+    if [[ "$line" == "SCHOOL_SLUG=$SLUG" ]]; then
+      seen_slug=1
+    elif [[ "$line" =~ ^SCHOOL_SLUG= ]]; then
+      die 2 "SCHOOL_SLUG in the env file does not match $SLUG."
+    fi
+  done <<< "$envdata"
+  if [ "$seen_slug" != 1 ]; then die 2 "The env file must set SCHOOL_SLUG=$SLUG."; fi
+
+  mkdir -p "$ENV_DIR" "$ROUTES_DIR"
+  printf '%s\n' "$envdata" > "$ENV_DIR/$SLUG.env"
+  chmod 600 "$ENV_DIR/$SLUG.env"
+
+  cleanup_create() {
+    "$DOCKER" rm -f "$(name)" > /dev/null 2>&1 || true
+    rm -f "$ENV_DIR/$SLUG.env" "$(route_file)"
+    rm -rf "${STATE_DIR:?}/$SLUG"
+  }
+  if ! pull_image "$TAG"; then cleanup_create; die 14 "Could not pull $TAG; nothing was created." create_failed; fi
+  if ! run_tag "$TAG"; then cleanup_create; die 14 "The new container did not become healthy; everything was removed." create_failed; fi
+  write_state current "$TAG"
+
+  local hostlist="" h
+  for h in "${hosts[@]}"; do hostlist="${hostlist:+$hostlist, }$h"; done
+  {
+    echo "# managed by school-deploy; do not edit"
+    echo "$hostlist {"
+    echo "	reverse_proxy $(name):$APP_PORT"
+    echo "}"
+  } > "$(route_file).tmp"
+  mv "$(route_file).tmp" "$(route_file)"
+  if ! caddy_reload > /dev/null 2>&1; then
+    rm -f "$(route_file)"
+    die 13 "The proxy would not load the route; the container is running without one." proxy_failed
+  fi
+  log "created at $TAG for ${hosts[*]}"
+  emit ok "$TAG"
+}
+
+cmd_deploy() {
+  local cur
+  cur="$(read_state current)"
+  [ -n "$cur" ] || die 3 "No such school: $SLUG. Use create first." unknown
+  pull_image "$TAG" || die 15 "Could not pull $TAG; nothing changed." pull_failed
+  if run_tag "$TAG"; then
+    write_state previous "$cur"
+    write_state current "$TAG"
+    log "deployed $TAG (was $cur)"
+    emit ok "$TAG"
+    return 0
+  fi
+  echo "New version did not become healthy; going back to $cur." >&2
+  if run_tag "$cur"; then
+    log "deploy of $TAG failed; rolled back to $cur"
+    emit rolled_back "$cur"
+    exit 10
+  fi
+  die 11 "$TAG failed and $cur would not start either." rollback_failed
+}
+
+cmd_rollback() {
+  local cur prev
+  cur="$(read_state current)"
+  prev="$(read_state previous)"
+  [ -n "$cur" ] || die 3 "No such school: $SLUG." unknown
+  [ -n "$prev" ] || die 3 "$SLUG has no previous version to go back to." no_previous
+  pull_image "$prev" || die 15 "Could not pull $prev; nothing changed." pull_failed
+  if run_tag "$prev"; then
+    write_state previous "$cur"
+    write_state current "$prev"
+    log "rolled back to $prev (was $cur)"
+    emit ok "$prev"
+    return 0
+  fi
+  if run_tag "$cur"; then
+    emit rolled_back "$cur"
+    exit 10
+  fi
+  die 11 "$prev would not start and neither would $cur." rollback_failed
+}
+
+cmd_remove() {
+  if [ -e "$(route_file)" ]; then
+    rm -f "$(route_file)"
+    caddy_reload > /dev/null 2>&1 || echo "Warning: proxy reload failed after removing the route." >&2
+  fi
+  "$DOCKER" rm -f "$(name)" > /dev/null 2>&1 || true
+  rm -f "$ENV_DIR/$SLUG.env"
+  rm -rf "${STATE_DIR:?}/$SLUG"
+  log "removed"
+  emit ok ""
+}
+
+cmd_status() {
+  local running
+  running="$("$DOCKER" inspect -f '{{.State.Running}}' "$(name)" 2> /dev/null || echo false)"
+  echo "current=$(read_state current) previous=$(read_state previous) running=$running"
+  emit "$([ "$running" = true ] && echo running || echo stopped)" "$(read_state current)"
+}
+
+# --- Entry: words come from the SSH client, or from the arguments when run by hand.
+if [ -n "${SSH_ORIGINAL_COMMAND:-}" ]; then
+  read -r -a ARGS <<< "$SSH_ORIGINAL_COMMAND"
+else
+  ARGS=("$@")
+fi
+usage() { echo "ERROR: $1" >&2; ACTION=""; SLUG=""; TAG=""; emit usage ""; exit 2; }
+
+[ "${#ARGS[@]}" -ge 2 ] || usage "Usage: create|deploy|rollback|remove|status <slug> ..."
+valid_slug "${ARGS[1]}" || usage "Bad school slug."
+case "${ARGS[0]}" in
+  create | deploy | rollback | remove | status) ;;
+  *) usage "Unknown command." ;;
+esac
+ACTION="${ARGS[0]}"
+SLUG="${ARGS[1]}"
+
+case "$ACTION" in
+  create)
+    if [ "${#ARGS[@]}" -lt 4 ] || [ "${#ARGS[@]}" -gt 8 ]; then usage "Usage: create <slug> <tag> <hostname>... (1 to 5 hostnames)"; fi
+    valid_tag "${ARGS[2]}" || usage "Tag must be a full 40-character commit hash."
+    for h in "${ARGS[@]:3}"; do valid_host "$h" || usage "Bad hostname."; done
+    TAG="${ARGS[2]}"
+    take_lock
+    cmd_create "${ARGS[@]:3}"
+    ;;
+  deploy)
+    [ "${#ARGS[@]}" -eq 3 ] || usage "Usage: deploy <slug> <tag>"
+    valid_tag "${ARGS[2]}" || usage "Tag must be a full 40-character commit hash."
+    TAG="${ARGS[2]}"
+    take_lock
+    cmd_deploy
+    ;;
+  rollback)
+    [ "${#ARGS[@]}" -eq 2 ] || usage "Usage: rollback <slug>"
+    take_lock
+    cmd_rollback
+    ;;
+  remove)
+    [ "${#ARGS[@]}" -eq 2 ] || usage "Usage: remove <slug>"
+    take_lock
+    cmd_remove
+    ;;
+  status)
+    [ "${#ARGS[@]}" -eq 2 ] || usage "Usage: status <slug>"
+    cmd_status
+    ;;
+esac

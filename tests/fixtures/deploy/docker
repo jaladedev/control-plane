@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Fake docker for tests/deploy-script.test.ts. State lives in $FAKE_DIR:
+#   containers/<name>/{image,args}   what is "running"
+#   pull-fail, unhealthy             files of tags (one per line) that misbehave
+#   caddy-fail                       if present, `exec` (the proxy reload) fails
+#   calls.log                        every call, for assertions
+set -u
+d="$FAKE_DIR"
+mkdir -p "$d/containers"
+echo "docker $*" >> "$d/calls.log"
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  pull)
+    tag="${1##*:}"
+    if grep -qx "$tag" "$d/pull-fail" 2> /dev/null; then echo "pull failed" >&2; exit 1; fi
+    ;;
+  rm)
+    [ "${1:-}" = "-f" ] && shift
+    rm -rf "$d/containers/${1:-}"
+    ;;
+  run)
+    args=("$@"); n=""
+    for ((i = 0; i < ${#args[@]}; i++)); do
+      if [ "${args[$i]}" = "--name" ]; then n="${args[$((i + 1))]}"; fi
+    done
+    mkdir -p "$d/containers/$n"
+    echo "${args[$((${#args[@]} - 1))]}" > "$d/containers/$n/image"
+    printf '%s\n' "${args[@]}" > "$d/containers/$n/args"
+    echo "deadbeef"
+    ;;
+  inspect)
+    fmt="$2"; n="$3"
+    [ -d "$d/containers/$n" ] || exit 1
+    case "$fmt" in
+      *IPAddress*) echo "ip-$n" ;;
+      *Running*) echo true ;;
+    esac
+    ;;
+  exec)
+    [ -e "$d/caddy-fail" ] && exit 1
+    ;;
+esac
+exit 0
