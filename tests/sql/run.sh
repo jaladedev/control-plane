@@ -36,3 +36,4 @@ run_suite tests/sql/foundations.test.sql
 run_suite tests/sql/m1.test.sql
 run_suite tests/sql/m2.test.sql
 run_suite tests/sql/m4.test.sql
+run_suite tests/sql/m4b.test.sql

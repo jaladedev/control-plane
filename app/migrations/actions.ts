@@ -35,7 +35,13 @@ async function respond(work: () => Promise<unknown>, ok: string) {
 
 export async function createRolloutAction(formData: FormData) {
   await respond(
-    () => createRollout(text(formData, "releaseId"), formData.get("batchSize")),
+    () =>
+      createRollout(
+        text(formData, "releaseId"),
+        formData.get("batchSize"),
+        // a checked box is the only way to skip; anything else backs up first
+        formData.get("skipBackup") === "on" ? "skip_if_expand_only" : "required"
+      ),
     "created"
   );
 }

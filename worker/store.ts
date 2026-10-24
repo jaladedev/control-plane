@@ -17,7 +17,13 @@ export type Job = {
 
 export type StepContext = {
   step: { id: string; rollout_id: string; school_id: string; attempt: number };
-  rollout: { id: string; image_tag: string; status: string; release_seq: number };
+  rollout: {
+    id: string;
+    image_tag: string;
+    status: string;
+    release_seq: number;
+    backup_policy: string;
+  };
   school: {
     id: string;
     slug: string;
@@ -33,6 +39,8 @@ export type SchoolPatch = Partial<{
   app_version: string;
   credentials_status: "ok" | "auth_failed" | "paused" | "unreachable";
 }>;
+
+export type BackupRow = { id: string; object_key: string };
 
 export interface Store {
   claimJob(worker: string, types: string[]): Promise<Job | null>;
@@ -59,6 +67,16 @@ export interface Store {
   startRun(schoolId: string, stepId: string | null, migrationId: string): Promise<string>;
   finishRun(runId: string, ok: boolean, error?: string): Promise<void>;
   updateSchool(schoolId: string, patch: SchoolPatch): Promise<void>;
+
+  startBackup(schoolId: string, stepId: string | null): Promise<string>;
+  finishBackup(
+    backupId: string,
+    result:
+      | { ok: true; objectKey: string; sizeBytes: number; sha256: string }
+      | { ok: false; error: string }
+  ): Promise<void>;
+  backupsToPrune(schoolId: string, keep: number): Promise<BackupRow[]>;
+  markBackupPruned(backupId: string): Promise<void>;
 }
 
 function check<T>(res: { data: T; error: { message: string } | null }, what: string): T {
@@ -159,7 +177,7 @@ export class SupabaseStore implements Store {
     const rollout = need(
       await this.db
         .from("rollouts")
-        .select("id, image_tag, status, release_id")
+        .select("id, image_tag, status, release_id, backup_policy")
         .eq("id", step.rollout_id)
         .single(),
       "load rollout"
@@ -183,6 +201,7 @@ export class SupabaseStore implements Store {
         image_tag: rollout.image_tag,
         status: rollout.status,
         release_seq: Number(release.seq),
+        backup_policy: String(rollout.backup_policy),
       },
       school: { ...school, hostnames: school.hostnames ?? [] },
     };
@@ -297,5 +316,42 @@ export class SupabaseStore implements Store {
   }
   async updateSchool(schoolId: string, patch: SchoolPatch) {
     check(await this.db.from("schools").update(patch).eq("id", schoolId), "update school");
+  }
+
+  async startBackup(schoolId: string, stepId: string | null) {
+    return need(
+      await this.db.rpc("start_backup", { p_school: schoolId, p_step: stepId }),
+      "start_backup"
+    ) as string;
+  }
+  async finishBackup(
+    backupId: string,
+    result:
+      | { ok: true; objectKey: string; sizeBytes: number; sha256: string }
+      | { ok: false; error: string }
+  ) {
+    check(
+      await this.db.rpc("finish_backup", {
+        p_backup: backupId,
+        p_ok: result.ok,
+        p_object_key: result.ok ? result.objectKey : null,
+        p_size: result.ok ? result.sizeBytes : null,
+        p_sha256: result.ok ? result.sha256 : null,
+        p_error: result.ok ? null : result.error,
+      }),
+      "finish_backup"
+    );
+  }
+  async backupsToPrune(schoolId: string, keep: number) {
+    const rows = check(
+      await this.db.rpc("backups_to_prune", { p_school: schoolId, p_keep: keep }),
+      "backups_to_prune"
+    );
+    return ((rows as { id: string; object_key: string | null }[] | null) ?? [])
+      .filter((r): r is { id: string; object_key: string } => typeof r.object_key === "string")
+      .map((r) => ({ id: r.id, object_key: r.object_key }));
+  }
+  async markBackupPruned(backupId: string) {
+    check(await this.db.rpc("mark_backup_pruned", { p_backup: backupId }), "mark_backup_pruned");
   }
 }

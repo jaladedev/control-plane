@@ -14,6 +14,23 @@ const schema = z.object({
   DEPLOY_SSH_USER: z.string().default("root"),
   DEPLOY_SSH_KEY_FILE: z.string().min(1),
   DEPLOY_SSH_KNOWN_HOSTS: z.string().min(1),
+  // Backups taken before a school's migrations run. Required: a worker that
+  // cannot back up must not be the one migrating school databases.
+  BACKUP_AGE_RECIPIENT: z
+    .string()
+    .regex(/^age1[0-9a-z]{20,}$/, "must be an age public key (age1...)"),
+  R2_ENDPOINT: z.string().url(),
+  R2_BUCKET: z.string().min(1),
+  R2_ACCESS_KEY_ID: z.string().min(1),
+  R2_SECRET_ACCESS_KEY: z.string().min(1),
+  BACKUP_PREFIX: z
+    .string()
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/, "has characters it should not")
+    .refine((v) => !v.endsWith("/") && !v.includes(".."), "has characters it should not")
+    .default("schools"),
+  BACKUP_KEEP: z.coerce.number().int().min(3).max(100).default(10),
+  BACKUP_TIMEOUT_MINUTES: z.coerce.number().int().min(1).max(240).default(30),
+  BACKUP_TMP_DIR: z.string().min(1).optional(),
   WORKER_ID: z.string().min(1).default(`${hostname()}-${process.pid}`),
   POLL_MS: z.coerce.number().int().min(500).max(60_000).default(3000),
   STALE_MINUTES: z.coerce.number().int().min(5).max(240).default(45),

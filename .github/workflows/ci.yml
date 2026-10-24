@@ -94,6 +94,8 @@ jobs:
           --health-retries 10
     env:
       RUNNER_TEST_PG: postgres://postgres:postgres@localhost:5432/postgres
+      # A local S3-compatible server (moto) for the backup tests.
+      BACKUP_TEST_S3_ENDPOINT: http://127.0.0.1:5555
       RUNNER_TEST_REQUIRED: "1"
       SUPABASE_URL: https://ci-placeholder.supabase.co
       SUPABASE_ANON_KEY: ci-placeholder-anon-key
@@ -111,5 +113,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The backup tests run the real pg_dump, pg_restore, age and aws against the
+      # Postgres service and a local S3 server. The pg_dump must match the service's
+      # major version (16). The AWS CLI is already on the runner.
+      - name: Install the backup tools and a local S3 server
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y age postgresql-client-16 python3-pip
+          sudo pip install --break-system-packages "moto[server]"
+          nohup moto_server -H 127.0.0.1 -p 5555 > moto.log 2>&1 &
+          for i in $(seq 1 30); do curl -s -o /dev/null http://127.0.0.1:5555/ && break; sleep 1; done
+
       - name: Run the integration tests
-        run: npx vitest run tests/integration-guard.test.ts tests/migrate-runner.test.ts tests/worker-handlers.test.ts tests/e2e-rollout.test.ts
+        run: npx vitest run tests/integration-guard.test.ts tests/migrate-runner.test.ts tests/worker-handlers.test.ts tests/e2e-rollout.test.ts tests/backup.test.ts

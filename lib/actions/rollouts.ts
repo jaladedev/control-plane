@@ -22,9 +22,13 @@ async function rpc(admin: Admin, fn: string, args: Record<string, unknown>) {
   return data;
 }
 
+export const BACKUP_POLICIES = ["required", "skip_if_expand_only"] as const;
+export type BackupPolicy = (typeof BACKUP_POLICIES)[number];
+
 export async function createRollout(
   releaseId: string,
-  batchSize: unknown
+  batchSize: unknown,
+  backupPolicy: unknown = "required"
 ): Promise<{ id: string }> {
   const actor = await requireActor(["owner"]);
   const release = z.string().uuid().parse(releaseId);
@@ -34,6 +38,8 @@ export async function createRollout(
     .min(1, "Batch size must be at least 1.")
     .max(50, "Batch size is at most 50.")
     .parse(batchSize);
+  // Anything but the one explicit skip option means "back up first".
+  const policy: BackupPolicy = backupPolicy === "skip_if_expand_only" ? backupPolicy : "required";
 
   const admin = createAdminClient();
   const { data: row, error } = await admin
@@ -47,13 +53,19 @@ export async function createRollout(
     actor,
     {
       action: "rollout.create",
-      details: { release_id: release, image_tag: row.image_tag, batch_size: size },
+      details: {
+        release_id: release,
+        image_tag: row.image_tag,
+        batch_size: size,
+        backup_policy: policy,
+      },
     },
     async () => ({
       id: (await rpc(admin, "create_rollout", {
         p_release: release,
         p_batch_size: size,
         p_by: actor.email,
+        p_backup_policy: policy,
       })) as string,
     })
   );

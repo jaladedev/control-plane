@@ -13,6 +13,7 @@ import {
 } from "@/worker/handlers";
 import type { StepContext } from "@/worker/store";
 import { fakeStore, job } from "@/tests/helpers/fake-store";
+import { fakeBackup } from "@/tests/helpers/fake-backup";
 
 const ADMIN_URL = process.env.RUNNER_TEST_PG;
 const TAG_OLD = "1".repeat(40);
@@ -36,9 +37,19 @@ const mig = (
   ...extra,
 });
 
-const context = (over: Partial<StepContext["school"]> = {}): StepContext => ({
+const context = (
+  over: Partial<StepContext["school"]> = {},
+  rolloutOver: Partial<StepContext["rollout"]> = {}
+): StepContext => ({
   step: { id: "step-1", rollout_id: "r1", school_id: "school-1", attempt: 1 },
-  rollout: { id: "r1", image_tag: TAG_NEW, status: "running", release_seq: 2 },
+  rollout: {
+    id: "r1",
+    image_tag: TAG_NEW,
+    status: "running",
+    release_seq: 2,
+    backup_policy: "required",
+    ...rolloutOver,
+  },
   school: {
     id: "school-1",
     slug: "greenfield",
@@ -64,8 +75,19 @@ function deps(store: ReturnType<typeof fakeStore>, over: Partial<HandlerDeps> = 
   const connect = vi.fn(async () => {
     throw new Error("connect not expected in this test");
   });
-  const d: HandlerDeps = { store, secrets, connect, deploy, probe, log: () => {}, ...over };
-  return { d, deploy, probe, connect };
+  const backup = fakeBackup();
+  const d: HandlerDeps = {
+    store,
+    secrets,
+    connect,
+    deploy,
+    probe,
+    backup,
+    backupKeep: 10,
+    log: () => {},
+    ...over,
+  };
+  return { d, deploy, probe, connect, backup };
 }
 
 describe("rollout step: failures before any database work", () => {
@@ -171,9 +193,13 @@ describe.skipIf(!ADMIN_URL)("rollout step against a real database", () => {
     [TAG_OLD, 1],
     [TAG_NEW, 2],
   ]);
-  const storeWith = (migrations: RunnerMigration[], school: Partial<StepContext["school"]> = {}) =>
+  const storeWith = (
+    migrations: RunnerMigration[],
+    school: Partial<StepContext["school"]> = {},
+    rollout: Partial<StepContext["rollout"]> = {}
+  ) =>
     fakeStore({
-      loadStep: vi.fn(async () => context(school)),
+      loadStep: vi.fn(async () => context(school, rollout)),
       registeredMigrations: vi.fn(async () => migrations),
       releaseSeqs: vi.fn(async () => seqs),
     });
@@ -226,7 +252,13 @@ describe.skipIf(!ADMIN_URL)("rollout step against a real database", () => {
     });
     expect((store.completions[0].result as { applied: string[] }).applied).toHaveLength(2);
     // order matters: migrate, then deploy, then record the new tag, then report
-    expect(store.calls).toEqual(["updateSchool", "updateSchool", "completeStep"]);
+    expect(store.calls).toEqual([
+      "startBackup",
+      "finishBackup",
+      "updateSchool",
+      "updateSchool",
+      "completeStep",
+    ]);
   });
 
   it("skips the deploy when the school already runs the target tag", async () => {
@@ -384,6 +416,261 @@ describe.skipIf(!ADMIN_URL)("rollout step against a real database", () => {
     expect(store.reconcileRuns).toHaveBeenCalledWith("school-1", []);
     const reconcileAt = store.calls.indexOf("completeStep");
     expect(reconcileAt).toBeGreaterThanOrEqual(0);
+  });
+
+  describe("backup before migrating", () => {
+    const one = [mig("20261001000000", "create table a (id int);")];
+    const contract = mig("20261002000000", "create table c (id int);", {
+      kind: "contract",
+      minAppVersion: TAG_OLD,
+    });
+    const backupOf = (store: ReturnType<typeof fakeStore>) =>
+      (store.completions[0].result as { backup: Record<string, unknown> }).backup;
+
+    it("backs up first: the school's database is still untouched when the backup is taken", async () => {
+      const seen: string[][] = [];
+      const backup = fakeBackup({
+        create: vi.fn(async (req) => {
+          seen.push(await tables());
+          return {
+            objectKey: `schools/${req.slug}/x.dump.age`,
+            sizeBytes: 5000,
+            sha256: "b".repeat(64),
+          };
+        }),
+      });
+      const store = storeWith(one);
+      const out = await run(store, { backup }).result;
+      expect(out.ok).toBe(true);
+      expect(seen).toEqual([[]]); // nothing migrated yet
+      expect(await tables()).toEqual(["a"]);
+      expect(backup.create).toHaveBeenCalledWith({
+        slug: "greenfield",
+        backupId: "backup-0",
+        databaseUrl: DB_URL,
+      });
+    });
+
+    it("records the backup against the school and the step, and says so in the step result", async () => {
+      const store = storeWith(one);
+      await run(store).result;
+      expect(store.startBackup).toHaveBeenCalledWith("school-1", "step-1");
+      expect(store.finishBackup).toHaveBeenCalledWith("backup-0", {
+        ok: true,
+        objectKey: "schools/greenfield/1.dump.age",
+        sizeBytes: 4096,
+        sha256: "a".repeat(64),
+      });
+      expect(backupOf(store)).toEqual({
+        status: "taken",
+        id: "backup-0",
+        objectKey: "schools/greenfield/1.dump.age",
+        sizeBytes: 4096,
+        sha256: "a".repeat(64),
+      });
+    });
+
+    it("fails the step, and migrates nothing, when the backup fails", async () => {
+      const backup = fakeBackup({
+        create: vi.fn(async () => {
+          throw new Error("pg_dump failed (exit 1): connection refused");
+        }),
+      });
+      const store = storeWith(one);
+      const { deploy, probe, result } = run(store, { backup });
+      const out = await result;
+      expect(out.ok).toBe(false);
+      expect(out.error).toMatch(/The backup failed, so no migration was run: pg_dump failed/);
+      expect(await tables()).toEqual([]);
+      expect(store.runs).toEqual([]); // no migration was even started
+      expect(deploy).not.toHaveBeenCalled();
+      expect(probe).not.toHaveBeenCalled();
+      expect(store.completions).toHaveLength(1);
+      expect(store.completions[0]).toMatchObject({ ok: false });
+      expect(store.backups[0]).toMatchObject({ status: "failed" });
+      expect(backupOf(store)).toMatchObject({ status: "failed", id: "backup-0" });
+    });
+
+    it("keeps the database URL and password out of a backup error", async () => {
+      const backup = fakeBackup({
+        create: vi.fn(async () => {
+          throw new Error(`could not connect to ${DB_URL} (password s3cretPassw0rd)`);
+        }),
+      });
+      const store = storeWith(one);
+      const out = await run(store, { backup }).result;
+      for (const text of [
+        out.error,
+        store.completions[0].error,
+        store.backups[0].error,
+        JSON.stringify(store.completions[0].result),
+      ]) {
+        expect(text).not.toContain("s3cretPassw0rd");
+        expect(text).not.toContain("postgres://");
+      }
+    });
+
+    it("fails the step, applying nothing, when the backup cannot be recorded, and names the object", async () => {
+      const store = storeWith(one);
+      store.finishBackup = vi.fn(async (_id, result) => {
+        if (result.ok) throw new Error("control plane unreachable");
+      });
+      const { deploy, result } = run(store);
+      const out = await result;
+      expect(out.ok).toBe(false);
+      expect(out.error).toMatch(
+        /uploaded \(schools\/greenfield\/1\.dump\.age\) but could not be recorded/
+      );
+      expect(await tables()).toEqual([]);
+      expect(deploy).not.toHaveBeenCalled();
+    });
+
+    it("fails the step, applying nothing, when the backup cannot even be opened", async () => {
+      const store = storeWith(one);
+      store.startBackup = vi.fn(async () => {
+        throw new Error("control plane unreachable");
+      });
+      const { backup, result } = run(store);
+      const out = await result;
+      expect(out.ok).toBe(false);
+      expect(backup.create).not.toHaveBeenCalled();
+      expect(await tables()).toEqual([]);
+    });
+
+    it("takes no backup when nothing is pending", async () => {
+      const store = storeWith([]);
+      const { backup, result } = run(store);
+      expect((await result).ok).toBe(true);
+      expect(backup.create).not.toHaveBeenCalled();
+      expect(store.startBackup).not.toHaveBeenCalled();
+      expect(backupOf(store)).toEqual({ status: "skipped", reason: "no migrations are pending" });
+    });
+
+    it("takes no backup when it is allowed and only expand migrations are pending", async () => {
+      const store = storeWith(one, {}, { backup_policy: "skip_if_expand_only" });
+      const { backup, result } = run(store);
+      const out = await result;
+      expect(out.ok).toBe(true);
+      expect(await tables()).toEqual(["a"]);
+      expect(backup.create).not.toHaveBeenCalled();
+      expect(backupOf(store)).toMatchObject({ status: "skipped" });
+      expect(String(backupOf(store).reason)).toMatch(/only expand migrations/);
+    });
+
+    it("always backs up before a contract migration, even when skipping is allowed", async () => {
+      const store = storeWith([...one, contract], {}, { backup_policy: "skip_if_expand_only" });
+      const { backup, result } = run(store);
+      const out = await result;
+      expect(out.ok).toBe(true);
+      expect(backup.create).toHaveBeenCalledTimes(1);
+      expect(backupOf(store)).toMatchObject({ status: "taken" });
+    });
+
+    it("backs up for a policy it does not recognise", async () => {
+      const store = storeWith(one, {}, { backup_policy: "whenever" });
+      const { backup, result } = run(store);
+      expect((await result).ok).toBe(true);
+      expect(backup.create).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not back up a school whose migrations are going to be refused", async () => {
+      const store = storeWith([
+        mig("20261001000000", "create table a (id int);", {
+          kind: "contract",
+          minAppVersion: TAG_NEW, // the school runs TAG_OLD
+        }),
+      ]);
+      const { backup, result } = run(store);
+      const out = await result;
+      expect(out.ok).toBe(false);
+      expect(out.error).toMatch(/contract migration that needs app version/);
+      expect(backup.create).not.toHaveBeenCalled();
+      expect(store.startBackup).not.toHaveBeenCalled();
+    });
+
+    it("keeps the backup in the step result when a later stage fails", async () => {
+      const store = storeWith(one);
+      const deploy = vi.fn(async (): Promise<DeployOutcome> => ({
+        ok: false,
+        code: 10,
+        status: "rolled_back",
+        tag: TAG_OLD,
+        message: "The new version was not healthy; the server rolled back to the old one.",
+      }));
+      const out = await run(store, { deploy }).result;
+      expect(out.ok).toBe(false);
+      expect(backupOf(store)).toMatchObject({ status: "taken", id: "backup-0" });
+    });
+
+    it("keeps the backup in the step result when a migration fails", async () => {
+      const store = storeWith([mig("20261001000000", "select 1/0;")]);
+      const out = await run(store).result;
+      expect(out.ok).toBe(false);
+      expect(out.error).toMatch(/division by zero/);
+      expect(backupOf(store)).toMatchObject({ status: "taken" });
+    });
+
+    describe("retention", () => {
+      it("deletes the objects of old backups and marks them pruned, keeping the configured number", async () => {
+        const store = storeWith(one);
+        store.backupsToPrune = vi.fn(async () => [
+          { id: "old-1", object_key: "schools/greenfield/old-1.dump.age" },
+          { id: "old-2", object_key: "schools/greenfield/old-2.dump.age" },
+        ]);
+        const { backup, result } = run(store, { backupKeep: 7 });
+        expect((await result).ok).toBe(true);
+        expect(store.backupsToPrune).toHaveBeenCalledWith("school-1", 7);
+        expect(backup.removed).toEqual([
+          "schools/greenfield/old-1.dump.age",
+          "schools/greenfield/old-2.dump.age",
+        ]);
+        expect(store.markBackupPruned).toHaveBeenCalledWith("old-1");
+        expect(store.markBackupPruned).toHaveBeenCalledWith("old-2");
+      });
+
+      it("never prunes before the new backup is recorded", async () => {
+        const store = storeWith(one);
+        store.backupsToPrune = vi.fn(async () => {
+          expect(store.calls).toContain("finishBackup");
+          return [];
+        });
+        await run(store).result;
+        expect(store.backupsToPrune).toHaveBeenCalledTimes(1);
+      });
+
+      it("does not mark a backup pruned when its object could not be deleted", async () => {
+        const store = storeWith(one);
+        store.backupsToPrune = vi.fn(async () => [
+          { id: "old-1", object_key: "schools/greenfield/old-1.dump.age" },
+        ]);
+        const backup = fakeBackup({
+          remove: vi.fn(async () => {
+            throw new Error("R2 is down");
+          }),
+        });
+        const out = await run(store, { backup }).result;
+        expect(out.ok).toBe(true);
+        expect(store.markBackupPruned).not.toHaveBeenCalled();
+      });
+
+      it("carries on with the rollout when pruning itself fails", async () => {
+        const store = storeWith(one);
+        store.backupsToPrune = vi.fn(async () => {
+          throw new Error("control plane hiccup");
+        });
+        const logs: string[] = [];
+        const out = await run(store, { log: (m) => logs.push(m) }).result;
+        expect(out.ok).toBe(true);
+        expect(await tables()).toEqual(["a"]);
+        expect(logs.join("\n")).toMatch(/could not prune old backups of greenfield/);
+      });
+
+      it("does not prune when the backup was skipped", async () => {
+        const store = storeWith(one, {}, { backup_policy: "skip_if_expand_only" });
+        await run(store).result;
+        expect(store.backupsToPrune).not.toHaveBeenCalled();
+      });
+    });
   });
 
   describe("schema scan", () => {

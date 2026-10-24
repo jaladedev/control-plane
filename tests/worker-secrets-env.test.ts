@@ -49,6 +49,11 @@ describe("loadWorkerEnv", () => {
     DEPLOY_SSH_HOST: "203.0.113.10",
     DEPLOY_SSH_KEY_FILE: "/k",
     DEPLOY_SSH_KNOWN_HOSTS: "/kh",
+    BACKUP_AGE_RECIPIENT: "age1" + "q".repeat(58),
+    R2_ENDPOINT: "https://acct.r2.cloudflarestorage.com",
+    R2_BUCKET: "school-backups",
+    R2_ACCESS_KEY_ID: "akid",
+    R2_SECRET_ACCESS_KEY: "secret-value",
   };
 
   it("fills defaults", () => {
@@ -58,6 +63,9 @@ describe("loadWorkerEnv", () => {
       POLL_MS: 3000,
       STALE_MINUTES: 45,
       SCAN_EVERY_MINUTES: 30,
+      BACKUP_PREFIX: "schools",
+      BACKUP_KEEP: 10,
+      BACKUP_TIMEOUT_MINUTES: 30,
     });
     expect(env.WORKER_ID.length).toBeGreaterThan(0);
   });
@@ -65,6 +73,41 @@ describe("loadWorkerEnv", () => {
   it("lists every missing setting at once", () => {
     expect(() => loadWorkerEnv({})).toThrow(
       /SUPABASE_URL[\s\S]*SCHOOL_DB_URLS[\s\S]*DEPLOY_SSH_KNOWN_HOSTS/
+    );
+  });
+
+  it("requires every backup setting: a worker that cannot back up must not start", () => {
+    for (const key of [
+      "BACKUP_AGE_RECIPIENT",
+      "R2_ENDPOINT",
+      "R2_BUCKET",
+      "R2_ACCESS_KEY_ID",
+      "R2_SECRET_ACCESS_KEY",
+    ]) {
+      const { [key]: _omitted, ...rest } = good as Record<string, string>;
+      void _omitted;
+      expect(() => loadWorkerEnv(rest), key).toThrow(new RegExp(key));
+    }
+  });
+
+  it("accepts only an age PUBLIC key as the recipient", () => {
+    expect(() => loadWorkerEnv({ ...good, BACKUP_AGE_RECIPIENT: "AGE-SECRET-KEY-1ABC" })).toThrow(
+      /BACKUP_AGE_RECIPIENT/
+    );
+    expect(() => loadWorkerEnv({ ...good, BACKUP_AGE_RECIPIENT: "not a key" })).toThrow(
+      /BACKUP_AGE_RECIPIENT/
+    );
+  });
+
+  it("rejects a backup prefix that could escape its folder, and a keep count that is too low", () => {
+    for (const prefix of ["../x", "a/../b", "/abs", "ends/", "has space"]) {
+      expect(() => loadWorkerEnv({ ...good, BACKUP_PREFIX: prefix }), prefix).toThrow(
+        /BACKUP_PREFIX/
+      );
+    }
+    expect(() => loadWorkerEnv({ ...good, BACKUP_KEEP: "2" })).toThrow(/BACKUP_KEEP/);
+    expect(loadWorkerEnv({ ...good, BACKUP_PREFIX: "team-a/schools" }).BACKUP_PREFIX).toBe(
+      "team-a/schools"
     );
   });
 

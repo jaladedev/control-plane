@@ -89,8 +89,33 @@ describe("createRollout", () => {
       p_release: id,
       p_batch_size: 5,
       p_by: "o@example.com",
+      p_backup_policy: "required",
     });
+    expect(audited[0]).toMatchObject({ details: { backup_policy: "required" } });
   });
+
+  it("skips backups only when asked for exactly the skip policy, and audits the choice", async () => {
+    await createRollout(id, 5, "skip_if_expand_only");
+    expect(audited[0]).toMatchObject({
+      action: "rollout.create",
+      details: { backup_policy: "skip_if_expand_only" },
+    });
+    expect(mocks.rpc).toHaveBeenCalledWith(
+      "create_rollout",
+      expect.objectContaining({ p_backup_policy: "skip_if_expand_only" })
+    );
+  });
+
+  it.each([undefined, "", "required", "skip", "SKIP_IF_EXPAND_ONLY", "true", true, 1, null])(
+    "backs up first for any policy that is not the exact skip option (%j)",
+    async (policy) => {
+      await createRollout(id, 5, policy);
+      expect(mocks.rpc).toHaveBeenCalledWith(
+        "create_rollout",
+        expect.objectContaining({ p_backup_policy: "required" })
+      );
+    }
+  );
 
   it.each(["0", "51", "abc", "2.5", ""])(
     "refuses a batch size of %j before writing anything",

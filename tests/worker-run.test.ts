@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { EnvSecrets } from "@/worker/secrets";
 import { runWorker, tick, type WorkerDeps } from "@/worker/run";
 import { fakeStore, job } from "@/tests/helpers/fake-store";
+import { fakeBackup } from "@/tests/helpers/fake-backup";
 
 const secrets = new EnvSecrets(
   JSON.stringify({ greenfield: "postgres://u:supersecret1@h.example.com/db" })
@@ -18,6 +19,8 @@ function workerDeps(
     connect: vi.fn(),
     deploy: vi.fn(),
     probe: vi.fn(),
+    backup: fakeBackup(),
+    backupKeep: 10,
     log: () => {},
     heartbeatMs: 5,
     ...over,

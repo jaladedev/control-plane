@@ -145,6 +145,13 @@ export default async function MigrationsPage({
                   className="w-20 rounded border border-slate-300 px-2 py-1"
                 />
               </label>
+              <label className="flex max-w-xs items-start gap-2 text-slate-700">
+                <input type="checkbox" name="skipBackup" className="mt-1" />
+                <span>
+                  Skip the backup for schools whose pending migrations are all expand. A school with
+                  a contract migration pending is always backed up.
+                </span>
+              </label>
               <button
                 disabled={preview.included.test === 0}
                 className="rounded bg-slate-900 px-4 py-1.5 text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-300"

@@ -3,11 +3,21 @@ import { StatusBadge, ago } from "@/components/badges";
 import { availableControls, progress, type StepInfo } from "@/lib/rollout-view";
 import { cancelRolloutAction, releaseAction, retryStepAction } from "@/app/migrations/actions";
 
+type BackupResult =
+  | { status: "taken"; sizeBytes?: number }
+  | { status: "skipped"; reason?: string }
+  | { status: "failed"; error?: string };
+
 type Step = StepInfo & {
   id: string;
   attempt: number;
   error: string | null;
-  result: { applied?: string[]; from_tag?: string | null; to_tag?: string | null } | null;
+  result: {
+    applied?: string[];
+    from_tag?: string | null;
+    to_tag?: string | null;
+    backup?: BackupResult | null;
+  } | null;
   finished_at: string | null;
   schools: { slug: string; name: string } | null;
 };
@@ -18,12 +28,22 @@ type Rollout = {
   status: string;
   released_through: number;
   batch_size: number;
+  backup_policy: string;
   halt_reason: string | null;
   created_by: string | null;
   created_at: string;
 };
 
 const short = (tag: string | null | undefined) => (tag ? tag.slice(0, 10) : "—");
+
+function backupLabel(b: BackupResult | null | undefined): string {
+  if (!b) return "—";
+  if (b.status === "taken") {
+    return b.sizeBytes ? `taken · ${(b.sizeBytes / 1_048_576).toFixed(1)} MB` : "taken";
+  }
+  return b.status === "skipped" ? "skipped" : "FAILED";
+}
+
 const input = "rounded border border-slate-300 px-2 py-1 text-sm";
 
 // The rollout in progress: its steps with live results, and the controls that
@@ -51,8 +71,11 @@ export function RolloutPanel({
         </h2>
         <StatusBadge status={rollout.status} />
         <span className="text-sm text-slate-500">
-          {p.done} of {p.total} schools done · batches of {rollout.batch_size} · started{" "}
-          {ago(rollout.created_at)}
+          {p.done} of {p.total} schools done · batches of {rollout.batch_size} ·{" "}
+          {rollout.backup_policy === "skip_if_expand_only"
+            ? "backups skipped when only expand migrations are pending"
+            : "backup before every migration"}{" "}
+          · started {ago(rollout.created_at)}
           {rollout.created_by ? ` by ${rollout.created_by}` : ""}
         </span>
         {moving && (
@@ -77,6 +100,7 @@ export function RolloutPanel({
               <th className="px-2 py-2">School</th>
               <th className="px-2 py-2">Stage</th>
               <th className="px-2 py-2">Status</th>
+              <th className="px-2 py-2">Backup</th>
               <th className="px-2 py-2">Migrations</th>
               <th className="px-2 py-2">Version</th>
               <th className="px-2 py-2">Result</th>
@@ -96,6 +120,18 @@ export function RolloutPanel({
                   {s.attempt > 1 && (
                     <span className="ml-1 text-xs text-slate-500">attempt {s.attempt}</span>
                   )}
+                </td>
+                <td
+                  className={`px-2 py-2 ${s.result?.backup?.status === "failed" ? "font-medium text-red-700" : ""}`}
+                  title={
+                    s.result?.backup?.status === "skipped"
+                      ? s.result.backup.reason
+                      : s.result?.backup?.status === "failed"
+                        ? s.result.backup.error
+                        : undefined
+                  }
+                >
+                  {backupLabel(s.result?.backup)}
                 </td>
                 <td className="px-2 py-2">
                   {s.result?.applied ? `${s.result.applied.length} applied` : "—"}

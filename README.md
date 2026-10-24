@@ -185,8 +185,9 @@ CLI's) is the source of truth for what it has.
 - Only `active` schools with a hostname and a Supabase project ref are in a
   rollout; the Migrations screen lists who is left out and why.
 - Release order comes from registration order, not from git history.
-- Backups are not taken before a migration. Take one first when a migration is
-  risky (see `docs/backup-restore.md`).
+- The worker backs up a school's database before migrating it and stops if it cannot
+  (`docs/worker.md`, "Backups"). The owner may skip it, per rollout, only for schools whose
+  pending migrations are all expand. Restoring is manual: `docs/backup-restore.md`.
 
 ### Scheduling the health run
 
@@ -233,7 +234,8 @@ second layer, not a replacement.
 - I have not confirmed what backups the Free plan includes. Treat the control-plane
   database as unbacked-up until the daily encrypted dump to R2 (`backup.yml`,
   `scripts/backup.sh`) has run once and you have done the restore drill in
-  `docs/backup-restore.md`. School databases are not covered yet.
+  `docs/backup-restore.md`. School databases are backed up by the worker before each
+  migration, not on a schedule.
 
 ## Checks
 

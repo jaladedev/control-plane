@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 import type { RunnerMigration } from "@/lib/migrate/runner";
-import type { Job, SchoolPatch, Store, StepContext } from "@/worker/store";
+import type { BackupRow, Job, SchoolPatch, Store, StepContext } from "@/worker/store";
 
 // An in-memory Store: records every call so tests can assert on order and
 // content. State machine rules are tested in SQL, not here.
@@ -10,17 +10,26 @@ export function fakeStore(overrides: Partial<Store> = {}) {
   const patches: SchoolPatch[] = [];
   const runs: { id: string; migrationId: string; status: string; error?: string }[] = [];
   const completions: { stepId: string; ok: boolean; result: unknown; error: string | null }[] = [];
+  const backups: {
+    id: string;
+    schoolId: string;
+    stepId: string | null;
+    status: string;
+    error?: string;
+  }[] = [];
 
   const store: Store & {
     calls: string[];
     patches: SchoolPatch[];
     runs: typeof runs;
     completions: typeof completions;
+    backups: typeof backups;
   } = {
     calls,
     patches,
     runs,
     completions,
+    backups,
     claimJob: vi.fn(async () => null),
     touchJob: vi.fn(async () => true),
     finishJob: vi.fn(async () => {}),
@@ -49,6 +58,21 @@ export function fakeStore(overrides: Partial<Store> = {}) {
     updateSchool: vi.fn(async (_id, patch) => {
       note("updateSchool");
       patches.push(patch);
+    }),
+    startBackup: vi.fn(async (schoolId, stepId) => {
+      note("startBackup");
+      backups.push({ id: `backup-${backups.length}`, schoolId, stepId, status: "running" });
+      return `backup-${backups.length - 1}`;
+    }),
+    finishBackup: vi.fn(async (backupId, result) => {
+      note("finishBackup");
+      const row = backups[Number(backupId.split("-")[1])];
+      row.status = result.ok ? "succeeded" : "failed";
+      if (!result.ok) row.error = result.error;
+    }),
+    backupsToPrune: vi.fn(async (): Promise<BackupRow[]> => []),
+    markBackupPruned: vi.fn(async () => {
+      note("markBackupPruned");
     }),
     ...overrides,
   };

@@ -1,6 +1,7 @@
 import {
   MigrationError,
   applyPendingMigrations,
+  planMigrations,
   readAppliedVersions,
   readAppliedVersionsReadOnly,
   type PgLike,
@@ -9,6 +10,7 @@ import type { DeployCommand, DeployOutcome } from "@/lib/deploy/client";
 import type { ProbeResult } from "@/lib/health";
 import type { Job, SchoolPatch, Store } from "@/worker/store";
 import type { SecretsProvider } from "@/worker/secrets";
+import { decideBackup, type BackupProvider } from "@/worker/backup";
 
 // What the worker does for each kind of job. All I/O comes in through
 // HandlerDeps, so these are tested with fakes; the real wiring is in
@@ -23,8 +25,19 @@ export type HandlerDeps = {
   deploy: (cmd: DeployCommand) => Promise<DeployOutcome>;
   /** Deep health probe of the school's first hostname. */
   probe: (hostname: string, slug: string) => Promise<ProbeResult>;
+  /** Backs up a school's database before its migrations run. */
+  backup: BackupProvider;
+  /** How many finished backups to keep per school; older ones are pruned. */
+  backupKeep: number;
   log: (message: string) => void;
 };
+
+// What the step's result says about the backup: taken (and where), skipped (and
+// why), or failed (and why). Recorded whatever happens afterwards.
+export type BackupInfo =
+  | { status: "taken"; id: string; objectKey: string; sizeBytes: number; sha256: string }
+  | { status: "skipped"; reason: string }
+  | { status: "failed"; id?: string; error: string };
 
 export type HandlerResult = { ok: boolean; result?: unknown; error?: string | null };
 
@@ -55,6 +68,55 @@ export function classifyConnectError(error: unknown): SchoolPatch["credentials_s
   return null;
 }
 
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+// Takes the backup, records it, and tidies old ones. Throws a StepFailure when
+// the backup cannot be made or cannot be recorded: nothing has been migrated
+// yet, so the step fails with the school's database untouched.
+async function takeBackup(
+  deps: HandlerDeps,
+  school: { id: string; slug: string },
+  stepId: string,
+  databaseUrl: string
+): Promise<Extract<BackupInfo, { status: "taken" }>> {
+  const { store, secrets, log } = deps;
+  const id = await store.startBackup(school.id, stepId);
+  let artifact;
+  try {
+    log(`backing up ${school.slug}`);
+    artifact = await deps.backup.create({ slug: school.slug, backupId: id, databaseUrl });
+  } catch (error) {
+    const text = clip(secrets.redact(errorText(error)));
+    await store.finishBackup(id, { ok: false, error: text }).catch(() => {});
+    throw new StepFailure(`The backup failed, so no migration was run: ${text}`, {
+      backup: { status: "failed", id, error: text } satisfies BackupInfo,
+    });
+  }
+  try {
+    await store.finishBackup(id, { ok: true, ...artifact });
+  } catch (error) {
+    // The object exists but is not on record. Say where it is, so it is not lost.
+    const text = clip(secrets.redact(errorText(error)));
+    throw new StepFailure(
+      `A backup was uploaded (${artifact.objectKey}) but could not be recorded, so no migration was run: ${text}`,
+      { backup: { status: "failed", id, error: text } satisfies BackupInfo }
+    );
+  }
+  log(`backed up ${school.slug}: ${artifact.objectKey} (${artifact.sizeBytes} bytes)`);
+
+  // Retention is housekeeping: it can never fail the step.
+  try {
+    for (const old of await store.backupsToPrune(school.id, deps.backupKeep)) {
+      await deps.backup.remove(old.object_key);
+      await store.markBackupPruned(old.id);
+      log(`pruned ${old.object_key}`);
+    }
+  } catch (error) {
+    log(`could not prune old backups of ${school.slug}: ${secrets.redact(errorText(error))}`);
+  }
+  return { status: "taken", id, ...artifact };
+}
+
 // One school, one release: migrate its database, deploy its container, check
 // it is healthy, and record the result. Reports to the rollout through
 // complete_step; any failure stops the rollout (in SQL), not here.
@@ -77,6 +139,7 @@ export async function handleRolloutStep(job: Job, deps: HandlerDeps): Promise<Ha
   let applied: string[] = [];
   let schemaVersion: string | null = null;
   let deployed = false;
+  let backup: BackupInfo | null = null;
 
   try {
     if (school.status !== "active")
@@ -88,17 +151,33 @@ export async function handleRolloutStep(job: Job, deps: HandlerDeps): Promise<Ha
     const url = await secrets.schoolDatabaseUrl(school.slug);
     const conn = await deps.connect(url);
     try {
-      await store.reconcileRuns(school.id, await readAppliedVersions(conn.db));
+      const appliedNow = await readAppliedVersions(conn.db);
+      await store.reconcileRuns(school.id, appliedNow);
       const [registered, seqs] = await Promise.all([
         store.registeredMigrations(),
         store.releaseSeqs(),
       ]);
-      const out = await applyPendingMigrations({
-        db: conn.db,
+      const plan = {
         registered,
         targetSeq: rollout.release_seq,
         currentTag: school.image_tag,
-        appSeq: (t) => (t ? (seqs.get(t) ?? null) : null),
+        appSeq: (t: string | null) => (t ? (seqs.get(t) ?? null) : null),
+      };
+
+      // Every refusal the runner would make is made here first, so a school
+      // that is going to be refused is not backed up for nothing.
+      const { pending } = planMigrations(plan, appliedNow);
+      const decision = decideBackup(rollout.backup_policy, pending);
+      if (decision.take) {
+        backup = await takeBackup(deps, school, stepId, url);
+      } else {
+        backup = { status: "skipped", reason: decision.reason };
+        log(`no backup for ${school.slug}: ${decision.reason}`);
+      }
+
+      const out = await applyPendingMigrations({
+        db: conn.db,
+        ...plan,
         recorder: {
           start: (m) => store.startRun(school.id, stepId, m.id),
           finish: (runId, ok, error) => store.finishRun(runId, ok, error),
@@ -155,13 +234,14 @@ export async function handleRolloutStep(job: Job, deps: HandlerDeps): Promise<Ha
       to_tag: tag,
       schema_version: schemaVersion,
       deployed,
+      backup,
     };
     await store.completeStep(stepId, true, result, null);
     return { ok: true, result };
   } catch (error) {
     const message = clip(secrets.redact(error instanceof Error ? error.message : String(error)));
     const partial = error instanceof StepFailure ? error.partial : { applied };
-    const result = { applied, from_tag: from, to_tag: tag, ...partial };
+    const result = { applied, from_tag: from, to_tag: tag, backup, ...partial };
     await store.completeStep(stepId, false, result, message);
     return { ok: false, result, error: message };
   }

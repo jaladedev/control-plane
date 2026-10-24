@@ -2,6 +2,7 @@ import { probeSchool } from "@/lib/health";
 import { runDeployCommand } from "@/lib/deploy/client";
 import { makeConnect } from "@/worker/connect";
 import { loadWorkerEnv } from "@/worker/env";
+import { ToolsBackupProvider } from "@/worker/backup";
 import { EnvSecrets } from "@/worker/secrets";
 import { SupabaseStore } from "@/worker/store";
 import { runWorker } from "@/worker/run";
@@ -47,6 +48,20 @@ async function main() {
           cmd
         ),
       probe: (hostname, slug) => probeSchool(hostname, { expectedSlug: slug }),
+      backup: new ToolsBackupProvider({
+        ageRecipient: env.BACKUP_AGE_RECIPIENT,
+        r2: {
+          endpoint: env.R2_ENDPOINT,
+          bucket: env.R2_BUCKET,
+          accessKeyId: env.R2_ACCESS_KEY_ID,
+          secretAccessKey: env.R2_SECRET_ACCESS_KEY,
+        },
+        prefix: env.BACKUP_PREFIX,
+        caFile: env.SCHOOL_DB_CA_FILE,
+        tmpDir: env.BACKUP_TMP_DIR,
+        timeoutMs: env.BACKUP_TIMEOUT_MINUTES * 60_000,
+      }),
+      backupKeep: env.BACKUP_KEEP,
       log,
     },
     {

@@ -9,6 +9,7 @@ import { EnvSecrets } from "@/worker/secrets";
 import { SupabaseStore } from "@/worker/store";
 import { tick, type WorkerDeps } from "@/worker/run";
 import { pgSupabase } from "@/tests/helpers/pg-supabase";
+import { fakeBackup } from "@/tests/helpers/fake-backup";
 
 // End to end: the real worker store, the real SQL state machine, the real
 // migration runner and real school databases, all on throwaway Postgres
@@ -42,6 +43,7 @@ describe.skipIf(!ADMIN_URL)("rollout end to end (real store, SQL and databases)"
   let deployImpl: (cmd: DeployCommand) => Promise<DeployOutcome>;
   let deploys: DeployCommand[];
   let deps: WorkerDeps;
+  let backup: ReturnType<typeof fakeBackup>;
 
   const ok: DeployOutcome = { ok: true, code: 0, status: "ok", tag: "", message: "" };
   const q = async (c: Client, sql: string, params: unknown[] = []) =>
@@ -122,6 +124,7 @@ describe.skipIf(!ADMIN_URL)("rollout end to end (real store, SQL and databases)"
     store = new SupabaseStore("http://unused", "unused", client);
 
     deploys = [];
+    backup = fakeBackup();
     deployImpl = async (cmd) => ({ ...ok, tag: "tag" in cmd ? cmd.tag : "" });
     const urls = {
       alpha: "postgres://u:pw-alpha-123@alpha.db/x",
@@ -151,6 +154,8 @@ describe.skipIf(!ADMIN_URL)("rollout end to end (real store, SQL and databases)"
           error: null,
         };
       },
+      backup,
+      backupKeep: 3,
       log: () => {},
       heartbeatMs: 60_000,
     };
@@ -404,5 +409,172 @@ describe.skipIf(!ADMIN_URL)("rollout end to end (real store, SQL and databases)"
     ).toEqual(["failed", "succeeded"]);
     expect(await q(cp, "select 1 from migration_runs where status = 'running'")).toEqual([]);
     expect(await columns(schools.alpha)).toEqual(["id", "name"]);
+  });
+
+  describe("backups", () => {
+    const startRolloutWith = async (tag: string, policy: string) =>
+      call("create_rollout", {
+        p_release: await release(tag),
+        p_batch_size: 1,
+        p_by: "t",
+        p_backup_policy: policy,
+      }) as Promise<string>;
+    const backupRows = () => q(cp, "select * from backups order by started_at, id");
+
+    it("backs up a school before migrating it, and records the backup against that step", async () => {
+      await register(TAG_B, [mig(M1), mig(M2)]);
+      const seen: string[][] = [];
+      backup.create = vi.fn(async (req) => {
+        seen.push(await columns(schools[req.slug]));
+        return {
+          objectKey: `schools/${req.slug}/k.dump.age`,
+          sizeBytes: 9000,
+          sha256: "c".repeat(64),
+        };
+      });
+      const rollout = await startRollout(TAG_B);
+      await call("release_rollout", { p_rollout: rollout, p_target: "test" });
+      await tick(deps);
+
+      expect(seen).toEqual([[]]); // alpha had no table yet when it was backed up
+      expect(await columns(schools.alpha)).toEqual(["id", "name"]);
+      const step = await stepFor("alpha");
+      const rows = await backupRows();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        status: "succeeded",
+        step_id: step.id,
+        object_key: "schools/alpha/k.dump.age",
+        pruned_at: null,
+      });
+      expect(Number(rows[0].size_bytes)).toBe(9000);
+      expect(rows[0].school_id).toBe((await schoolRow("alpha")).id);
+      expect(step.result.backup).toMatchObject({ status: "taken", id: rows[0].id });
+    });
+
+    it("halts the rollout and touches nothing when the backup fails, then goes on after a retry", async () => {
+      await register(TAG_B, [mig(M1)]);
+      let fail = true;
+      const good = backup.create;
+      backup.create = vi.fn(async (req) => {
+        if (fail) throw new Error("R2 said no");
+        return good(req);
+      });
+      const rollout = await startRollout(TAG_B);
+      await call("release_rollout", { p_rollout: rollout, p_target: "test" });
+      await tick(deps);
+
+      const failed = await stepFor("alpha");
+      expect(failed.status).toBe("failed");
+      expect(failed.error).toMatch(/The backup failed, so no migration was run: R2 said no/);
+      expect((await one("select status from rollouts")).status).toBe("halted");
+      expect(await columns(schools.alpha)).toEqual([]); // not migrated
+      expect(deploys).toEqual([]); // not deployed
+      expect((await schoolRow("alpha")).image_tag).toBe(TAG_A);
+      expect((await q(cp, "select count(*)::int as n from migration_runs"))[0].n).toBe(0);
+      expect((await backupRows()).map((r) => r.status)).toEqual(["failed"]);
+      expect((await backupRows())[0].error).toMatch(/R2 said no/);
+      expect(await tick(deps)).toBe(false);
+
+      fail = false;
+      await call("retry_step", { p_step: failed.id });
+      await tick(deps);
+      expect((await stepFor("alpha")).status).toBe("succeeded");
+      expect(await columns(schools.alpha)).toEqual(["id"]);
+      expect((await backupRows()).map((r) => r.status)).toEqual(["failed", "succeeded"]);
+    });
+
+    it("skips the backup when the rollout allows it and only expand migrations are pending", async () => {
+      await register(TAG_B, [mig(M1)]);
+      const rollout = await startRolloutWith(TAG_B, "skip_if_expand_only");
+      await call("release_rollout", { p_rollout: rollout, p_target: "test" });
+      await tick(deps);
+      expect((await stepFor("alpha")).status).toBe("succeeded");
+      expect(await columns(schools.alpha)).toEqual(["id"]);
+      expect(await backupRows()).toEqual([]);
+      expect(backup.created).toEqual([]);
+      expect((await stepFor("alpha")).result.backup).toMatchObject({ status: "skipped" });
+    });
+
+    it("still backs up before a contract migration when skipping is allowed", async () => {
+      await register(TAG_A, [mig(M1)]);
+      await register(TAG_B, [mig(M2, { kind: "contract", min_app_version: TAG_A })]);
+      const rollout = await startRolloutWith(TAG_B, "skip_if_expand_only");
+      await call("release_rollout", { p_rollout: rollout, p_target: "test" });
+      await tick(deps);
+      expect((await stepFor("alpha")).status).toBe("succeeded");
+      expect(backup.created.map((r) => r.slug)).toEqual(["alpha"]);
+      expect((await backupRows()).map((r) => r.status)).toEqual(["succeeded"]);
+    });
+
+    it("takes no backup when the school has nothing to migrate", async () => {
+      await register(TAG_B, []);
+      const rollout = await startRollout(TAG_B);
+      await call("release_rollout", { p_rollout: rollout, p_target: "test" });
+      await tick(deps);
+      expect((await stepFor("alpha")).status).toBe("succeeded");
+      expect(await backupRows()).toEqual([]);
+    });
+
+    it("prunes old backups, keeping the newest few, and records which objects it deleted", async () => {
+      await register(TAG_B, [mig(M1)]);
+      const alphaId = (await schoolRow("alpha")).id;
+      for (let day = 1; day <= 4; day++) {
+        await cp.query(
+          `insert into backups (school_id, status, object_key, size_bytes, sha256, started_at, finished_at)
+           values ($1, 'succeeded', $2, 100, $3, $4, $4)`,
+          [
+            alphaId,
+            `schools/alpha/old-${day}.dump.age`,
+            "d".repeat(64),
+            `2026-10-0${day}T00:00:00Z`,
+          ]
+        );
+      }
+      const rollout = await startRollout(TAG_B);
+      await call("release_rollout", { p_rollout: rollout, p_target: "test" });
+      await tick(deps);
+
+      // 4 old + 1 new = 5 succeeded; backupKeep is 3, so the two oldest go
+      expect(backup.removed.sort()).toEqual([
+        "schools/alpha/old-1.dump.age",
+        "schools/alpha/old-2.dump.age",
+      ]);
+      const rows = await q(cp, "select object_key, pruned_at from backups order by started_at, id");
+      const pruned = rows.filter((r) => r.pruned_at).map((r) => r.object_key);
+      expect(pruned.sort()).toEqual([
+        "schools/alpha/old-1.dump.age",
+        "schools/alpha/old-2.dump.age",
+      ]);
+      expect(rows).toHaveLength(5); // the records stay
+      expect((await stepFor("alpha")).status).toBe("succeeded");
+    });
+
+    it("does not prune the backups of a rollout that is halted, where a restore is most likely", async () => {
+      await register(TAG_B, [mig(M1)]);
+      const alphaId = (await schoolRow("alpha")).id;
+      const rollout = await startRollout(TAG_B);
+      await call("release_rollout", { p_rollout: rollout, p_target: "test" });
+      await tick(deps); // alpha succeeded, with its backup
+      const mine = (await backupRows())[0];
+      for (let day = 1; day <= 4; day++) {
+        await cp.query(
+          `insert into backups (school_id, status, object_key, size_bytes, sha256, started_at, finished_at)
+           values ($1, 'succeeded', $2, 100, $3, $4, $4)`,
+          [
+            alphaId,
+            `schools/alpha/newer-${day}.dump.age`,
+            "d".repeat(64),
+            `2027-01-0${day}T00:00:00Z`,
+          ]
+        );
+      }
+      // the rollout's own backup is now the oldest, but its rollout is still running
+      const due = await q(cp, "select object_key from backups_to_prune($1, 3)", [alphaId]);
+      expect(due.map((r) => r.object_key)).not.toContain(mine.object_key);
+      await call("cancel_rollout", { p_rollout: rollout });
+      const after = await q(cp, "select object_key from backups_to_prune($1, 3)", [alphaId]);
+      expect(after.map((r) => r.object_key)).toContain(mine.object_key);
+    });
   });
 });
