@@ -1,0 +1,65 @@
+import { probeSchool } from "@/lib/health";
+import { runDeployCommand } from "@/lib/deploy/client";
+import { makeConnect } from "@/worker/connect";
+import { loadWorkerEnv } from "@/worker/env";
+import { EnvSecrets } from "@/worker/secrets";
+import { SupabaseStore } from "@/worker/store";
+import { runWorker } from "@/worker/run";
+
+// Entry point: `npm run worker`. Reads its settings from the process
+// environment (a systemd EnvironmentFile or a container --env-file), runs until
+// it receives SIGTERM or SIGINT, and lets an in-flight job finish first.
+
+async function main() {
+  const env = loadWorkerEnv();
+  const secrets = new EnvSecrets(env.SCHOOL_DB_URLS);
+  const log = (message: string) =>
+    console.log(`${new Date().toISOString()} ${secrets.redact(message)}`);
+  if (!env.SCHOOL_DB_CA_FILE) {
+    log(
+      "warning: SCHOOL_DB_CA_FILE is not set; school database connections are encrypted but the server is not verified."
+    );
+  }
+
+  const controller = new AbortController();
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.on(signal, () => {
+      log(`${signal} received; finishing the current job, then stopping`);
+      controller.abort();
+    });
+  }
+
+  log(`worker ${env.WORKER_ID} starting`);
+  await runWorker(
+    {
+      workerId: env.WORKER_ID,
+      store: new SupabaseStore(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY),
+      secrets,
+      connect: makeConnect(env.SCHOOL_DB_CA_FILE),
+      deploy: (cmd) =>
+        runDeployCommand(
+          {
+            host: env.DEPLOY_SSH_HOST,
+            user: env.DEPLOY_SSH_USER,
+            keyFile: env.DEPLOY_SSH_KEY_FILE,
+            knownHostsFile: env.DEPLOY_SSH_KNOWN_HOSTS,
+          },
+          cmd
+        ),
+      probe: (hostname, slug) => probeSchool(hostname, { expectedSlug: slug }),
+      log,
+    },
+    {
+      pollMs: env.POLL_MS,
+      staleMinutes: env.STALE_MINUTES,
+      scanEveryMs: env.SCAN_EVERY_MINUTES * 60_000,
+      signal: controller.signal,
+    }
+  );
+  log("worker stopped");
+}
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : error);
+  process.exit(1);
+});

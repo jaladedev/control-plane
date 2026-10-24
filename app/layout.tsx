@@ -25,6 +25,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <Link href="/" className="hover:underline">
                 Schools
               </Link>
+              <Link href="/migrations" className="hover:underline">
+                Migrations
+              </Link>
               {actor.role === "owner" && (
                 <>
                   <Link href="/users" className="hover:underline">

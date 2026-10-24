@@ -14,6 +14,8 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const results = [];
+// React puts <!-- --> between adjacent text and values; remove it before matching text.
+const flat = (html) => html.replace(/<!-- -->/g, "");
 const CRON_SECRET = "c".repeat(40);
 function check(name, ok, detail = "") {
   results.push(ok);
@@ -33,7 +35,7 @@ function freePort() {
 
 // A stand-in for the control plane's Supabase. `state.role` is what
 // dashboard_role() returns (null means "not an active dashboard user").
-const state = { role: "owner", userOk: true, withSchool: false };
+const state = { role: "owner", userOk: true, withSchool: false, withRelease: false, rollout: null };
 const SCHOOL_ID = "30000000-0000-4000-8000-000000000001";
 const SCHOOL = {
   id: SCHOOL_ID,
@@ -57,7 +59,98 @@ const SCHOOL = {
   license_is_trial: false,
   license_valid_until: null,
   license_grace_until: null,
+  supabase_project_ref: "abcdefghijklmnopqrst",
+  rollout_group: "test",
+  schema_version: "20261001000000",
+  credentials_status: "ok",
 };
+const RELEASES = [
+  {
+    id: "40000000-0000-4000-8000-000000000002",
+    seq: 2,
+    image_tag: "b".repeat(40),
+    notes: "second",
+    created_at: new Date().toISOString(),
+  },
+  {
+    id: "40000000-0000-4000-8000-000000000001",
+    seq: 1,
+    image_tag: "a".repeat(40),
+    notes: null,
+    created_at: new Date().toISOString(),
+  },
+];
+const MIGRATIONS = [
+  {
+    version: "20261002000000",
+    name: "20261002000000_second",
+    kind: "expand",
+    release_id: RELEASES[0].id,
+  },
+  {
+    version: "20261001000000",
+    name: "20261001000000_first",
+    kind: "expand",
+    release_id: RELEASES[1].id,
+  },
+];
+const ROLLOUT_ID = "50000000-0000-4000-8000-000000000001";
+const rolloutRow = (status) => ({
+  id: ROLLOUT_ID,
+  release_id: RELEASES[0].id,
+  image_tag: "b".repeat(40),
+  status,
+  batch_size: 5,
+  released_through: 2,
+  halt_reason: status === "halted" ? "A step failed: The new version was not healthy" : null,
+  created_by: "owner@example.com",
+  created_at: new Date().toISOString(),
+  finished_at: null,
+});
+const stepRows = (halted) => [
+  {
+    id: "60000000-0000-4000-8000-000000000001",
+    position: 1,
+    stage: "test",
+    batch_no: 0,
+    status: "succeeded",
+    attempt: 1,
+    error: null,
+    result: {
+      applied: ["20261002000000_second"],
+      from_tag: "a".repeat(40),
+      to_tag: "b".repeat(40),
+    },
+    finished_at: new Date().toISOString(),
+    schools: { slug: "greenfield", name: "Greenfield School" },
+  },
+  {
+    id: "60000000-0000-4000-8000-000000000002",
+    position: 2,
+    stage: "pilot",
+    batch_no: 0,
+    status: halted ? "failed" : "running",
+    attempt: 1,
+    error: halted
+      ? "Deploy failed: The new version was not healthy; the server rolled back to the old one."
+      : null,
+    result: null,
+    finished_at: null,
+    schools: { slug: "bluefield", name: "Bluefield Academy" },
+  },
+  {
+    id: "60000000-0000-4000-8000-000000000003",
+    position: 3,
+    stage: "batch",
+    batch_no: 1,
+    status: "pending",
+    attempt: 1,
+    error: null,
+    result: null,
+    finished_at: null,
+    schools: { slug: "redfield", name: "Redfield College" },
+  },
+];
 async function startMock() {
   const port = await freePort();
   const server = http.createServer((req, res) => {
@@ -85,6 +178,14 @@ async function startMock() {
       res.end();
     } else if (url.startsWith("/rest/v1/rpc/dashboard_role")) {
       res.end(JSON.stringify(state.role));
+    } else if (url.startsWith("/rest/v1/releases") && state.withRelease) {
+      res.end(JSON.stringify(RELEASES));
+    } else if (url.startsWith("/rest/v1/migrations") && state.withRelease) {
+      res.end(JSON.stringify(MIGRATIONS));
+    } else if (url.startsWith("/rest/v1/rollout_steps") && state.rollout) {
+      res.end(JSON.stringify(stepRows(state.rollout === "halted")));
+    } else if (url.startsWith("/rest/v1/rollouts") && state.rollout && url.includes("status=in.")) {
+      res.end(JSON.stringify([rolloutRow(state.rollout)]));
     } else if (url.startsWith("/rest/v1/schools") && state.withSchool) {
       res.end(JSON.stringify([SCHOOL]));
     } else if (url.startsWith("/rest/v1/")) {
@@ -191,7 +292,15 @@ async function main() {
       `${cronOk.status} ${JSON.stringify(cronBody)}`
     );
     check("cron route is POST only", (await get("/api/cron/health")).status === 405);
-    for (const p of ["/", "/users", "/audit", "/mfa", "/schools/new", `/schools/${SCHOOL_ID}`]) {
+    for (const p of [
+      "/",
+      "/users",
+      "/audit",
+      "/mfa",
+      "/schools/new",
+      `/schools/${SCHOOL_ID}`,
+      "/migrations",
+    ]) {
       const res = await get(p);
       check(
         `signed out: ${p} goes to /login`,
@@ -277,6 +386,66 @@ async function main() {
       detailHtml.includes("Save and push new version") && detailHtml.includes("Revoke licence")
     );
     state.withSchool = false;
+    // Migrations screen: owner
+    const mig = await get("/migrations", aal2);
+    const migHtml = await mig.text();
+    check("owner: /migrations opens", mig.status === 200, `${mig.status}`);
+    check("owner: nav links to Migrations", homeHtml.includes('href="/migrations"'));
+    check(
+      "owner: with no release, the screen says how to register one",
+      migHtml.includes("No release is registered")
+    );
+
+    state.withRelease = true;
+    state.withSchool = true;
+    const start = flat(await (await get("/migrations", aal2)).text());
+    check(
+      "owner: with a release, the start form and plan preview are shown",
+      start.includes("Plan rollout") && start.includes("Would include 1 test"),
+      start.slice(0, 120)
+    );
+    check(
+      "owner: the version matrix shows the school's database and pending count",
+      start.includes("Greenfield School") &&
+        start.includes("20261001000000") &&
+        start.includes("1 pending")
+    );
+    check("owner: Refresh versions is offered", start.includes("Refresh versions"));
+
+    state.rollout = "running";
+    const running = flat(await (await get("/migrations", aal2)).text());
+    check(
+      "owner: a running rollout shows its steps and results",
+      running.includes("Rollout of") &&
+        running.includes("Bluefield Academy") &&
+        running.includes("1 applied") &&
+        running.includes("1 of 3 schools done"),
+      running.slice(0, 120)
+    );
+    check(
+      "owner: while a school runs, releases are blocked and the screen says why",
+      running.includes("Waiting for the released schools to finish") &&
+        running.includes("Cancel rollout") &&
+        running.includes("Updating live")
+    );
+    check(
+      "owner: the start form is replaced while a rollout is active",
+      !running.includes("Plan rollout")
+    );
+
+    state.rollout = "halted";
+    const halted = flat(await (await get("/migrations", aal2)).text());
+    check(
+      "owner: a halted rollout shows the failure, offers a retry, and stops refreshing",
+      halted.includes("Stopped on a failure") &&
+        halted.includes("rolled back to the old one") &&
+        halted.includes("Retry") &&
+        !halted.includes("Updating live"),
+      halted.slice(0, 120)
+    );
+    state.rollout = null;
+    state.withRelease = false;
+    state.withSchool = false;
     check("owner: /users opens", (await get("/users", aal2)).status === 200);
     check("owner: /audit opens", (await get("/audit", aal2)).status === 200);
     check(
@@ -311,6 +480,34 @@ async function main() {
           !dhHtml.includes("Save changes"),
         `${dh.status}`
       );
+      state.withSchool = false;
+      state.withRelease = true;
+      state.withSchool = true;
+      state.rollout = "running";
+      const mh = await get("/migrations", aal2);
+      const mhHtml = flat(await mh.text());
+      check(
+        `${role}: /migrations opens read-only (rollout visible, no controls)`,
+        mh.status === 200 &&
+          mhHtml.includes("Rollout of") &&
+          !mhHtml.includes("Cancel rollout") &&
+          !mhHtml.includes("Release test school") &&
+          !mhHtml.includes("Refresh versions"),
+        JSON.stringify({
+          status: mh.status,
+          rollout: mhHtml.includes("Rollout of"),
+          cancel: mhHtml.includes("Cancel rollout"),
+          release: mhHtml.includes("Release test school"),
+          refresh: mhHtml.includes("Refresh versions"),
+        })
+      );
+      state.rollout = null;
+      const mi = flat(await (await get("/migrations", aal2)).text());
+      check(
+        `${role}: cannot start a rollout`,
+        !mi.includes("Plan rollout") && mi.includes("Only an owner can start a rollout")
+      );
+      state.withRelease = false;
       state.withSchool = false;
       for (const p of ["/users", "/audit", "/schools/new"]) {
         const res = await get(p, aal2);

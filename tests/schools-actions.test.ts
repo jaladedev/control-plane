@@ -72,6 +72,7 @@ beforeEach(() => {
       hostnames: ["green.example.com"],
       included_students: 300,
       hosting_plan: "pro",
+      rollout_group: "standard",
       billing_contact_name: null,
       billing_contact_email: null,
       region: null,
@@ -191,5 +192,25 @@ describe("setSchoolStatus", () => {
   it("refuses an unknown status", async () => {
     await expect(setSchoolStatus(schoolId, "deleted")).rejects.toThrow();
     expect(mocks.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("rollout group", () => {
+  it("defaults to standard and records a change in the audit row", async () => {
+    await updateSchool(schoolId, { ...form, rollout_group: "test" });
+    expect(audited[0].details).toMatchObject({
+      changes: { rollout_group: { from: "standard", to: "test" } },
+    });
+    expect(mocks.update.mock.calls[0][0]).toMatchObject({ rollout_group: "test" });
+  });
+
+  it("refuses an unknown group before anything is written", async () => {
+    await expect(updateSchool(schoolId, { ...form, rollout_group: "canary" })).rejects.toThrow();
+    expect(mocks.withAudit).not.toHaveBeenCalled();
+  });
+
+  it("sets it when a school is created", async () => {
+    await createSchool({ ...form, rollout_group: "pilot" });
+    expect(mocks.insert.mock.calls[0][0]).toMatchObject({ rollout_group: "pilot" });
   });
 });

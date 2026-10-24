@@ -7,6 +7,7 @@ export const SCHOOL_STATUSES = ["provisioning", "active", "suspended", "archived
 export type SchoolStatus = (typeof SCHOOL_STATUSES)[number];
 
 export const HOSTING_PLANS = ["free", "pro"] as const;
+export const ROLLOUT_GROUPS = ["test", "pilot", "standard"] as const;
 
 // Names that only mean something inside a private network. The health cron
 // fetches these hostnames from the public internet, so they are refused.
@@ -75,6 +76,8 @@ export const schoolDetailsSchema = z.object({
   }),
   included_students: z.coerce.number().int().min(0).max(1_000_000),
   hosting_plan: z.enum(HOSTING_PLANS),
+  // Where a school sits in a rollout: test schools go first, then pilot, then the rest.
+  rollout_group: z.enum(ROLLOUT_GROUPS).default("standard"),
   billing_contact_name: optionalText(120),
   billing_contact_email: optionalEmail,
   region: optionalText(60),

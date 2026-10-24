@@ -2,7 +2,7 @@
 
 Dashboard for running the hosted school product: a registry of schools and, in
 later milestones, health, licences, deploys, billing and audited support access.
-This is **M0 (foundations), M1 (schools registry and health) and M2 (licences)** from the project plan. It is its own app with its
+This is **M0 (foundations), M1 (schools registry and health), M2 (licences), M3 (deploy script) and M4 (releases, migrations and canary rollouts)** from the project plan. It is its own app with its
 own Supabase project, kept separate from every school.
 
 ## What M0 includes
@@ -98,6 +98,96 @@ SSH key (create, deploy, roll back, remove, with a health check and automatic
 rollback). Setup, exit codes and what is still unverified are in
 `deploy/README.md`. Nothing in the dashboard calls it yet.
 
+## What M4 adds: releases, migrations and canary rollouts
+
+A release is an image tag CI built (a full commit hash). A rollout takes one
+release to every school in a safe order: **test school first, then the pilot,
+then the rest in batches**, one school at a time, stopping at the first failure.
+For each school the worker runs that school's pending migrations, deploys the
+image, and checks it is healthy before moving on.
+
+### 1. Register the release
+
+```
+npm run register-release -- --tag <40-char commit> \
+  --dir ../school_app/supabase/migrations --by you@example.com
+```
+
+Run it from this repo with `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` set
+(or in `.env.local`). `--by` must be an active owner; the audit row is written
+first. Add `--dry-run` to see what would be recorded.
+
+- The **first time**, add `--baseline <version>`: every migration up to and
+  including that version is registered as one that all schools already have.
+  Use the newest version your schools have applied.
+- Migrations are stored with their SQL and a checksum, and are **append-only**:
+  an edited file is refused (add a new migration instead), a missing file is
+  refused, and a new migration must sort after everything registered.
+- A migration that drops or changes something the old app uses must be marked
+  `-- control-plane: kind=contract min_app_version=<commit>` in its first
+  lines. Unmarked files containing such statements are refused. **This check is
+  a net for common accidents, not a proof**: it cannot understand your schema.
+  The real rule is expand, then contract (below).
+- `CREATE INDEX CONCURRENTLY` and other statements that cannot run inside a
+  transaction are refused. Files that wrap themselves in `BEGIN; ... COMMIT;`
+  are accepted.
+
+### 2. Plan and run the rollout (Migrations screen, owner only)
+
+1. Mark one active school as the **test school** (its page, Rollout group), and
+   optionally a **pilot**. A rollout cannot be planned without a test school.
+2. Migrations, Start a rollout: choose the release and a batch size.
+3. **Release test school.** Watch it migrate, deploy and pass its health check.
+4. **Release pilot**, then **Release next batch** (type `ALL`) repeatedly, or
+   **Release all remaining** (type `ALL`). The order is enforced in the
+   database; the buttons only offer what it would accept.
+5. If a school fails, everything stops. Read the error on that row, fix the
+   cause, and **Retry** the step, or **Cancel rollout**. A school already
+   running is never interrupted: half a migration is worse than a finished one.
+
+Only one rollout can be active at a time, and a halted one still holds that
+lock until it is retried to completion or cancelled.
+
+### Expand, then contract
+
+Schools run different app versions at the same time during a rollout, and a
+rollback puts the old app back on a database the new migration already changed.
+So a migration must work with **both** the old and the new app (expand: add
+columns, tables, nullable fields). Removing or changing something is a second,
+later release (contract): ship the app that no longer needs it first, then a
+migration marked `kind=contract min_app_version=<that app's commit>`. The
+runner refuses a contract migration for any school whose app is older than that
+(or unknown, or not a registered release), and refuses before applying anything
+else in the same step.
+
+### The worker
+
+`npm run worker` runs the process that does the work; see `docs/worker.md` and
+`worker/.env.example`. It needs, in its own environment, `SCHOOL_DB_URLS` (each
+school's direct Postgres connection string), the deploy SSH key and known-hosts
+file, and the control-plane service key. **These stay out of the dashboard.**
+It also re-reads each school's applied migrations every 30 minutes for the
+version matrix (and on **Refresh versions**).
+
+What the runner guarantees, tested against real throwaway Postgres databases:
+one transaction per migration; stop at the first failure with that migration
+fully rolled back; re-running applies only what is missing; a per-database lock
+so nothing else migrates the school at the same time; out-of-order and unknown
+migrations are refused; and the school's own migration table (the Supabase
+CLI's) is the source of truth for what it has.
+
+### Limits to know
+
+- School database URLs are in the worker's environment until a secrets manager
+  replaces them. Whoever can read that environment can change every school.
+- Without `SCHOOL_DB_CA_FILE` the worker encrypts connections to school
+  databases but does not verify the server.
+- Only `active` schools with a hostname and a Supabase project ref are in a
+  rollout; the Migrations screen lists who is left out and why.
+- Release order comes from registration order, not from git history.
+- Backups are not taken before a migration. Take one first when a migration is
+  risky (see `docs/backup-restore.md`).
+
 ### Scheduling the health run
 
 `.github/workflows/health.yml` calls the route every 10 minutes. Add repository
@@ -111,8 +201,9 @@ outage. If the app is behind Cloudflare Access, add a bypass policy for the path
 The health run is not written to the audit log (it would add a row every ten
 minutes); it only writes health data. Anything an actor does still is.
 
-Not in M0, M1 or M2: the job queue, secrets-manager access, anything that talks to a
-school's database, Cloudflare Access and the VPS (set up outside this repo).
+Not yet built: secrets-manager access (school credentials are interim
+environment variables), creating a school from the dashboard, and Cloudflare
+Access and the VPS (set up outside this repo).
 
 ## Setup
 

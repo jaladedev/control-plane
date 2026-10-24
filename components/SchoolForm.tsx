@@ -1,4 +1,4 @@
-import { HOSTING_PLANS } from "@/lib/schools";
+import { HOSTING_PLANS, ROLLOUT_GROUPS } from "@/lib/schools";
 
 type Defaults = Partial<{
   slug: string;
@@ -6,6 +6,7 @@ type Defaults = Partial<{
   hostnames: string[];
   included_students: number;
   hosting_plan: string;
+  rollout_group: string;
   billing_contact_name: string | null;
   billing_contact_email: string | null;
   region: string | null;
@@ -106,6 +107,23 @@ export function SchoolForm({
             </option>
           ))}
         </select>
+      </label>
+      <label className="block text-sm">
+        <span className="mb-1 block text-slate-700">Rollout group</span>
+        <select
+          name="rollout_group"
+          defaultValue={defaults.rollout_group ?? "standard"}
+          className={input}
+        >
+          {ROLLOUT_GROUPS.map((g) => (
+            <option key={g} value={g}>
+              {g}
+            </option>
+          ))}
+        </select>
+        <span className="mt-1 block text-xs text-slate-500">
+          Releases reach test schools first, then pilot, then the rest.
+        </span>
       </label>
       <Field label="Region" name="region" defaultValue={defaults.region} />
       <Field

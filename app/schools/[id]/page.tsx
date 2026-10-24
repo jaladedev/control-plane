@@ -44,6 +44,13 @@ export default async function SchoolPage({
     .order("at", { ascending: false })
     .limit(20);
 
+  const { data: runs } = await supabase
+    .from("migration_runs")
+    .select("id, status, started_at, finished_at, error, migrations(name)")
+    .eq("school_id", id)
+    .order("started_at", { ascending: false })
+    .limit(10);
+
   const isOwner = actor.role === "owner";
   const canLicense = isOwner || actor.role === "finance";
   const canSupport = (isOwner || actor.role === "support") && school.status !== "archived";
@@ -169,6 +176,46 @@ export default async function SchoolPage({
           </dl>
         </section>
       )}
+
+      <section className="space-y-3">
+        <h2 className="font-semibold">Migration history</h2>
+        <p className="text-xs text-slate-500">
+          Database version:{" "}
+          <span className="font-mono">{school.schema_version ?? "not read yet"}</span>. Group:{" "}
+          {school.rollout_group}.
+        </p>
+        {!runs?.length ? (
+          <p className="text-sm text-slate-600">
+            No migrations have been run through the control plane for this school.
+          </p>
+        ) : (
+          <div className="overflow-x-auto rounded border border-slate-200 bg-white">
+            <table className="w-full text-left text-sm">
+              <thead className="border-b border-slate-200 bg-slate-50 text-slate-600">
+                <tr>
+                  <th className="px-3 py-2">Migration</th>
+                  <th className="px-3 py-2">Result</th>
+                  <th className="px-3 py-2">When</th>
+                  <th className="px-3 py-2">Error</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map((r) => (
+                  <tr key={r.id} className="border-b border-slate-100 last:border-0">
+                    <td className="px-3 py-2 font-mono text-xs">
+                      {(r as unknown as { migrations: { name: string } | null }).migrations?.name ??
+                        "?"}
+                    </td>
+                    <td className="px-3 py-2">{r.status}</td>
+                    <td className="px-3 py-2">{fmt(r.finished_at ?? r.started_at)}</td>
+                    <td className="px-3 py-2 text-xs text-red-700">{r.error ?? ""}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       <section className="space-y-3">
         <h2 className="font-semibold">Recent health checks</h2>

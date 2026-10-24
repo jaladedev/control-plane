@@ -38,3 +38,18 @@ export function ago(iso: string | null, now: Date = new Date()): string {
   if (hours < 48) return `${hours} h ago`;
   return `${Math.round(hours / 24)} days ago`;
 }
+
+const STATUS: Record<string, string> = {
+  pending: "bg-slate-100 text-slate-600",
+  queued: "bg-sky-100 text-sky-800",
+  running: "bg-blue-100 text-blue-800",
+  succeeded: "bg-green-100 text-green-800",
+  failed: "bg-red-100 text-red-800",
+  cancelled: "bg-slate-200 text-slate-600",
+  halted: "bg-red-100 text-red-800",
+};
+
+/** Rollout and step statuses. */
+export function StatusBadge({ status }: { status: string }) {
+  return <span className={`${base} ${STATUS[status] ?? STATUS.pending}`}>{status}</span>;
+}
