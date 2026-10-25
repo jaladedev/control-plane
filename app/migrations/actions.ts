@@ -6,9 +6,12 @@ import { ZodError } from "zod";
 import {
   cancelRollout,
   createRollout,
+  createSchoolRollout,
+  registerRelease,
   releaseRollout,
   requestSchemaScan,
   retryStep,
+  rollbackSchool,
 } from "@/lib/actions/rollouts";
 
 // Form actions for the Migrations screen: each does its work through the
@@ -71,4 +74,30 @@ export async function cancelRolloutAction(formData: FormData) {
 
 export async function scanAction() {
   await respond(() => requestSchemaScan(null), "scanning");
+}
+
+export async function createSchoolRolloutAction(formData: FormData) {
+  await respond(
+    () =>
+      createSchoolRollout(
+        text(formData, "releaseId"),
+        text(formData, "schoolId"),
+        formData.get("confirm")
+      ),
+    "school_started"
+  );
+}
+
+export async function rollbackSchoolAction(formData: FormData) {
+  await respond(
+    () => rollbackSchool(text(formData, "schoolId"), formData.get("confirm")),
+    "rollback_queued"
+  );
+}
+
+export async function registerReleaseAction(formData: FormData) {
+  await respond(
+    () => registerRelease(formData.get("tag"), formData.get("notes")),
+    "register_queued"
+  );
 }

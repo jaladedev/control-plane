@@ -31,6 +31,12 @@ const schema = z.object({
   BACKUP_KEEP: z.coerce.number().int().min(3).max(100).default(10),
   BACKUP_TIMEOUT_MINUTES: z.coerce.number().int().min(1).max(240).default(30),
   BACKUP_TMP_DIR: z.string().min(1).optional(),
+  // Optional: lets the dashboard's "Register a release" read a commit's migrations.
+  GITHUB_TOKEN: z.string().min(1).optional(),
+  SCHOOL_APP_REPO: z
+    .string()
+    .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, "must look like owner/name")
+    .default("jaladedev/school_app"),
   WORKER_ID: z.string().min(1).default(`${hostname()}-${process.pid}`),
   POLL_MS: z.coerce.number().int().min(500).max(60_000).default(3000),
   STALE_MINUTES: z.coerce.number().int().min(5).max(240).default(45),

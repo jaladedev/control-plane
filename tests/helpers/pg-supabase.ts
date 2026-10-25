@@ -134,6 +134,16 @@ class Builder implements PromiseLike<Result> {
   }
 }
 
+// supabase-js sends every argument as JSON, so an object, or an array of objects,
+// arrives at a jsonb parameter as JSON. node-postgres would turn an array into a
+// Postgres array literal instead, so encode those the way the real client does.
+// (Arrays of plain strings stay arrays: they feed text[] parameters.)
+function encode(v: unknown): unknown {
+  if (v === null || typeof v !== "object" || v instanceof Date) return v;
+  if (Array.isArray(v) && !v.some((x) => x !== null && typeof x === "object")) return v;
+  return JSON.stringify(v);
+}
+
 export function pgSupabase(pg: Client): SupabaseClient {
   const client = {
     from: (table: string) => new Builder(pg, table),
@@ -143,7 +153,7 @@ export function pgSupabase(pg: Client): SupabaseClient {
         const call = keys.map((k, i) => `${k} => $${i + 1}`).join(", ");
         const res = await pg.query(
           `select * from ${ident(name)}(${call})`,
-          keys.map((k) => args[k])
+          keys.map((k) => encode(args[k]))
         );
         if (res.fields.length === 1 && res.fields[0].name === name) {
           const v = res.rows[0]?.[name];

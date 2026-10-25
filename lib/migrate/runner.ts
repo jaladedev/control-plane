@@ -67,7 +67,7 @@ export class MigrationError extends Error {
 
 // One lock per school database, so two runners (or a person with the Supabase
 // CLI) cannot migrate it at the same time. Released with the connection.
-const LOCK_KEY = 7234001;
+export const LOCK_KEY = 7234001;
 const LOCK_TIMEOUT = "30s";
 const STATEMENT_TIMEOUT = "15min";
 

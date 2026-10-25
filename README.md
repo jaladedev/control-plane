@@ -169,6 +169,12 @@ file, and the control-plane service key. **These stay out of the dashboard.**
 It also re-reads each school's applied migrations every 30 minutes for the
 version matrix (and on **Refresh versions**).
 
+Beyond canary rollouts, owners can **roll out to one school**, **roll a school
+back** (one attempt, after checking the server agrees about what is running) and
+**register a release** from the dashboard (with `GITHUB_TOKEN` set on the worker).
+A school that already has its schema is adopted once with `npm run adopt-school`
+(dry run by default). All of this is described in `docs/worker.md`.
+
 What the runner guarantees, tested against real throwaway Postgres databases:
 one transaction per migration; stop at the first failure with that migration
 fully rolled back; re-running applies only what is missing; a per-database lock

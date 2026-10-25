@@ -95,12 +95,16 @@ describe.skipIf(!ADMIN_URL)("rollout end to end (real store, SQL and databases)"
     admin = new Client({ connectionString: ADMIN_URL });
     await admin.connect();
   });
+  // Every test makes its own databases (tens of them by the end), so dropping
+  // them one by one outgrew the default 10 s hook limit.
   afterAll(async () => {
     await cp?.end().catch(() => {});
     for (const c of Object.values(schools)) await c.end().catch(() => {});
-    for (const name of created) await admin.query(`drop database if exists ${name} with (force)`);
+    await Promise.all(
+      created.map((name) => admin.query(`drop database if exists ${name} with (force)`))
+    );
     await admin.end();
-  });
+  }, 120_000);
 
   beforeEach(async () => {
     await cp?.end().catch(() => {});
@@ -575,6 +579,290 @@ describe.skipIf(!ADMIN_URL)("rollout end to end (real store, SQL and databases)"
       await call("cancel_rollout", { p_rollout: rollout });
       const after = await q(cp, "select object_key from backups_to_prune($1, 3)", [alphaId]);
       expect(after.map((r) => r.object_key)).toContain(mine.object_key);
+    });
+  });
+
+  // ------------------------------------------------------------------------
+  // One school, rolling a school back, registering a release from the dashboard
+  // ------------------------------------------------------------------------
+  describe("one school, rollback and dashboard registration", () => {
+    const TAG_D = "d".repeat(40);
+    const M3 = { version: "20261003000000", sql: "alter table students add column grade int;" };
+    const schoolId = async (slug: string) => (await schoolRow(slug)).id as string;
+    const jobs = (type: string) =>
+      q(
+        cp,
+        "select status, attempts, result, error from jobs where type = $1 order by created_at",
+        [type]
+      );
+
+    // A fake server that remembers the current and previous tag of each school, the
+    // way deploy/school-deploy does: deploy shifts current to previous, rollback swaps.
+    function fakeServer(initial: Record<string, string>) {
+      const server = new Map(
+        Object.entries(initial).map(([slug, tag]) => [slug, { current: tag, previous: "" }])
+      );
+      const seen: string[] = [];
+      deployImpl = async (cmd) => {
+        seen.push(cmd.action);
+        const s = server.get(cmd.slug)!;
+        if (cmd.action === "status") return { ...ok, status: "running", tag: s.current };
+        if (cmd.action === "deploy") {
+          s.previous = s.current;
+          s.current = cmd.tag;
+          return { ...ok, tag: cmd.tag };
+        }
+        if (!s.previous)
+          return {
+            ...ok,
+            ok: false,
+            code: 3,
+            status: "no_previous",
+            message: "no previous version",
+          };
+        [s.current, s.previous] = [s.previous, s.current];
+        return { ...ok, tag: s.current };
+      };
+      deps.probe = async (_h, slug): Promise<ProbeResult> => ({
+        ok: true,
+        httpStatus: 200,
+        latencyMs: 5,
+        version: server.get(slug)!.current,
+        error: null,
+      });
+      return { server, seen };
+    }
+
+    it("rolls out to one school only, without canary stages", async () => {
+      await register(TAG_A, [mig(M1)]);
+      await register(TAG_B, [mig(M2)]);
+      fakeServer({ alpha: TAG_A, beta: TAG_A });
+      const rollout = (await call("create_school_rollout", {
+        p_release: await release(TAG_B),
+        p_school: await schoolId("beta"),
+        p_by: "owner@example.com",
+      })) as string;
+
+      expect(
+        await one("select scope, status, released_through from rollouts where id = $1", [rollout])
+      ).toMatchObject({
+        scope: "school",
+        status: "running",
+        released_through: 1,
+      });
+      expect(await tick(deps)).toBe(true); // queued at once: nobody releases a stage
+      expect(await tick(deps)).toBe(false);
+
+      expect((await schoolRow("beta")).image_tag).toBe(TAG_B);
+      expect(await columns(schools.beta)).toEqual(["id", "name"]);
+      expect((await schoolRow("alpha")).image_tag).toBe(TAG_A); // untouched
+      expect(await columns(schools.alpha)).toEqual([]);
+      expect((await one("select status from rollouts where id = $1", [rollout])).status).toBe(
+        "succeeded"
+      );
+      expect((await stepFor("beta")).stage).toBe("single");
+    });
+
+    it("backs a school up before a one-school rollout migrates it, as a full rollout does", async () => {
+      await register(TAG_A, [mig(M1)]);
+      await register(TAG_B, [mig(M2)]);
+      fakeServer({ alpha: TAG_A, beta: TAG_A });
+      const seen: string[][] = [];
+      backup.create = vi.fn(async (req) => {
+        seen.push(await columns(schools[req.slug]));
+        return {
+          objectKey: `schools/${req.slug}/single.dump.age`,
+          sizeBytes: 7000,
+          sha256: "e".repeat(64),
+        };
+      });
+      await call("create_school_rollout", {
+        p_release: await release(TAG_B),
+        p_school: await schoolId("beta"),
+        p_by: "owner@example.com",
+      });
+      await tick(deps);
+
+      expect(backup.create).toHaveBeenCalledTimes(1);
+      expect(seen).toEqual([[]]); // beta was still unmigrated when it was backed up
+      expect(await columns(schools.beta)).toEqual(["id", "name"]);
+      const rows = await q(cp, "select status, step_id, object_key from backups");
+      expect(rows).toEqual([
+        {
+          status: "succeeded",
+          step_id: (await stepFor("beta")).id,
+          object_key: "schools/beta/single.dump.age",
+        },
+      ]);
+    });
+
+    it("halts a one-school rollout on a failed deploy, and a retry finishes it", async () => {
+      await register(TAG_A, [mig(M1)]);
+      await register(TAG_B, [mig(M2)]);
+      fakeServer({ alpha: TAG_A, beta: TAG_A });
+      const good = deployImpl;
+      deployImpl = async (cmd) =>
+        cmd.action === "deploy"
+          ? { ...ok, ok: false, code: 10, status: "rolled_back", message: "unhealthy" }
+          : good(cmd);
+      const rollout = (await call("create_school_rollout", {
+        p_release: await release(TAG_B),
+        p_school: await schoolId("beta"),
+        p_by: "o",
+      })) as string;
+      await tick(deps);
+      expect((await one("select status from rollouts where id = $1", [rollout])).status).toBe(
+        "halted"
+      );
+      expect(await columns(schools.beta)).toEqual(["id", "name"]); // the migrations stay
+
+      deployImpl = good;
+      await call("retry_step", { p_step: (await stepFor("beta")).id });
+      await tick(deps);
+      expect((await one("select status from rollouts where id = $1", [rollout])).status).toBe(
+        "succeeded"
+      );
+      expect((await schoolRow("beta")).image_tag).toBe(TAG_B);
+    });
+
+    it("refuses a rollout of an older release over a school on a newer one", async () => {
+      await register(TAG_A, [mig(M1)]);
+      await register(TAG_B, [mig(M2)]);
+      await cp.query("update schools set image_tag = $1 where slug = 'beta'", [TAG_B]);
+      await expect(
+        call("create_school_rollout", {
+          p_release: await release(TAG_A),
+          p_school: await schoolId("beta"),
+          p_by: "o",
+        })
+      ).rejects.toThrow(/newer release than this one/);
+      await expect(startRollout(TAG_A)).rejects.toThrow(/newer release than this one: beta/);
+    });
+
+    it("rolls a school back through the worker, migrations stay, and records the version it is on", async () => {
+      await register(TAG_A, [mig(M1)]);
+      await register(TAG_B, [mig(M2)]);
+      const { seen } = fakeServer({ alpha: TAG_A, beta: TAG_A });
+      await call("create_school_rollout", {
+        p_release: await release(TAG_B),
+        p_school: await schoolId("beta"),
+        p_by: "o",
+      });
+      await tick(deps);
+      expect((await schoolRow("beta")).image_tag).toBe(TAG_B);
+      seen.length = 0;
+
+      await call("queue_school_rollback", {
+        p_school: await schoolId("beta"),
+        p_by: "owner@example.com",
+      });
+      expect(await tick(deps)).toBe(true);
+
+      expect(seen).toEqual(["status", "rollback"]); // checks first, then acts
+      expect((await schoolRow("beta")).image_tag).toBe(TAG_A);
+      expect((await schoolRow("beta")).app_version).toBe(TAG_A);
+      expect(await columns(schools.beta)).toEqual(["id", "name"]); // migrations are not undone
+      const [job] = await jobs("school_rollback");
+      expect(job).toMatchObject({ status: "succeeded", attempts: 1 });
+      expect(job.result).toMatchObject({ from_tag: TAG_B, to_tag: TAG_A });
+    });
+
+    it("does not roll back when the server disagrees about what is running", async () => {
+      await register(TAG_A, [mig(M1)]);
+      await register(TAG_B, [mig(M2)]);
+      const { server, seen } = fakeServer({ alpha: TAG_A, beta: TAG_A });
+      await call("create_school_rollout", {
+        p_release: await release(TAG_B),
+        p_school: await schoolId("beta"),
+        p_by: "o",
+      });
+      await tick(deps);
+      server.get("beta")!.current = TAG_A; // someone changed the server by hand
+      seen.length = 0;
+
+      await call("queue_school_rollback", { p_school: await schoolId("beta"), p_by: "o" });
+      await tick(deps);
+
+      expect(seen).toEqual(["status"]); // never sent the rollback: it could have flipped forward
+      const [job] = await jobs("school_rollback");
+      expect(job.status).toBe("failed");
+      expect(job.error).toMatch(/server says .* is running but the dashboard says/);
+      expect((await schoolRow("beta")).image_tag).toBe(TAG_B);
+    });
+
+    it("never repeats a rollback: an error is a failed job after one attempt", async () => {
+      await register(TAG_A, [mig(M1)]);
+      await register(TAG_B, [mig(M2)]);
+      fakeServer({ alpha: TAG_A, beta: TAG_A });
+      await call("create_school_rollout", {
+        p_release: await release(TAG_B),
+        p_school: await schoolId("beta"),
+        p_by: "o",
+      });
+      await tick(deps);
+      const good = deployImpl;
+      deployImpl = async (cmd) => {
+        if (cmd.action === "rollback") throw new Error("ssh connection reset");
+        return good(cmd);
+      };
+      await call("queue_school_rollback", { p_school: await schoolId("beta"), p_by: "o" });
+      await tick(deps);
+      expect(await tick(deps)).toBe(false); // nothing is waiting to be retried
+      const [job] = await jobs("school_rollback");
+      expect(job).toMatchObject({ status: "failed", attempts: 1 });
+      expect(job.error).toMatch(/ssh connection reset/);
+    });
+
+    it("registers a release from the dashboard's job: same rules as the CLI", async () => {
+      await register(TAG_A, [mig(M1), mig(M2)]);
+      deps.fetchMigrations = async (tag) => {
+        expect(tag).toBe(TAG_D);
+        return [
+          { name: `${M1.version}_students.sql`, content: M1.sql },
+          { name: `${M2.version}_name.sql`, content: M2.sql },
+          { name: `${M3.version}_grade.sql`, content: M3.sql },
+        ];
+      };
+      await call("queue_register_release", {
+        p_tag: TAG_D,
+        p_notes: "adds grade",
+        p_by: "owner@example.com",
+      });
+      expect(await tick(deps)).toBe(true);
+
+      const [job] = await jobs("register_release");
+      expect(job.error).toBeNull();
+      expect(job.status).toBe("succeeded");
+      expect(job.result).toEqual({ migrations: [`${M3.version}_grade`] });
+      const rel = await one(
+        "select notes, registered_by, image_tag from releases where image_tag = $1",
+        [TAG_D]
+      );
+      expect(rel).toMatchObject({ notes: "adds grade", registered_by: "owner@example.com" });
+      expect(
+        (await q(cp, "select version from migrations order by version")).map((r) => r.version)
+      ).toEqual([M1.version, M2.version, M3.version]);
+    });
+
+    it("refuses to register an edited migration, and registers nothing", async () => {
+      await register(TAG_A, [mig(M1)]);
+      deps.fetchMigrations = async () => [
+        { name: `${M1.version}_students.sql`, content: "create table students (id bigint);" },
+      ];
+      await call("queue_register_release", { p_tag: TAG_D, p_notes: null, p_by: "o" });
+      await tick(deps);
+      const [job] = await jobs("register_release");
+      expect(job.status).toBe("failed");
+      expect(job.error).toMatch(/was changed after it was registered/);
+      expect(await q(cp, "select 1 from releases where image_tag = $1", [TAG_D])).toEqual([]);
+    });
+
+    it("explains when the worker has no GitHub token", async () => {
+      await register(TAG_A, [mig(M1)]);
+      deps.fetchMigrations = undefined;
+      await call("queue_register_release", { p_tag: TAG_D, p_notes: null, p_by: "o" });
+      await tick(deps);
+      expect((await jobs("register_release"))[0].error).toMatch(/no GITHUB_TOKEN/);
     });
   });
 });

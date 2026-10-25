@@ -390,6 +390,18 @@ async function main() {
     const mig = await get("/migrations", aal2);
     const migHtml = await mig.text();
     check("owner: /migrations opens", mig.status === 200, `${mig.status}`);
+    const ownerMig = flat(migHtml);
+    check(
+      "owner: sees Register a release, Roll out to one school and Roll a school back",
+      ownerMig.includes("Register a release") &&
+        ownerMig.includes("Roll out to one school") &&
+        ownerMig.includes("Roll a school back"),
+      JSON.stringify({
+        register: ownerMig.includes("Register a release"),
+        one: ownerMig.includes("Roll out to one school"),
+        back: ownerMig.includes("Roll a school back"),
+      })
+    );
     check("owner: nav links to Migrations", homeHtml.includes('href="/migrations"'));
     check(
       "owner: with no release, the screen says how to register one",
@@ -492,7 +504,10 @@ async function main() {
           mhHtml.includes("Rollout of") &&
           !mhHtml.includes("Cancel rollout") &&
           !mhHtml.includes("Release test school") &&
-          !mhHtml.includes("Refresh versions"),
+          !mhHtml.includes("Refresh versions") &&
+          !mhHtml.includes("Register a release") &&
+          !mhHtml.includes("Roll out to one school") &&
+          !mhHtml.includes("Roll a school back"),
         JSON.stringify({
           status: mh.status,
           rollout: mhHtml.includes("Rollout of"),

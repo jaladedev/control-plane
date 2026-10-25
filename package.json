@@ -17,7 +17,8 @@
     "format:check": "prettier --check .",
     "create-owner": "cross-env NODE_OPTIONS=--dns-result-order=ipv4first node scripts/create-owner.mjs",
     "worker": "cross-env NODE_OPTIONS=--dns-result-order=ipv4first tsx worker/index.ts",
-    "register-release": "cross-env NODE_OPTIONS=--dns-result-order=ipv4first tsx scripts/register-release.ts"
+    "register-release": "cross-env NODE_OPTIONS=--dns-result-order=ipv4first tsx scripts/register-release.ts",
+    "adopt-school": "cross-env NODE_OPTIONS=--dns-result-order=ipv4first tsx scripts/adopt-school.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.3",

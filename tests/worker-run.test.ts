@@ -32,7 +32,12 @@ describe("tick", () => {
     const store = fakeStore();
     expect(await tick(workerDeps(store))).toBe(false);
     expect(store.finishJob).not.toHaveBeenCalled();
-    expect(store.claimJob).toHaveBeenCalledWith("w1", ["rollout_step", "schema_scan"]);
+    expect(store.claimJob).toHaveBeenCalledWith("w1", [
+      "rollout_step",
+      "schema_scan",
+      "school_rollback",
+      "register_release",
+    ]);
   });
 
   it("finishes a job that the handler says failed, with its error", async () => {

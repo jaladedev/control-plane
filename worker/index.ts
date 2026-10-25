@@ -4,6 +4,7 @@ import { makeConnect } from "@/worker/connect";
 import { loadWorkerEnv } from "@/worker/env";
 import { ToolsBackupProvider } from "@/worker/backup";
 import { EnvSecrets } from "@/worker/secrets";
+import { fetchMigrationsAtCommit } from "@/lib/github-migrations";
 import { SupabaseStore } from "@/worker/store";
 import { runWorker } from "@/worker/run";
 
@@ -62,6 +63,10 @@ async function main() {
         timeoutMs: env.BACKUP_TIMEOUT_MINUTES * 60_000,
       }),
       backupKeep: env.BACKUP_KEEP,
+      fetchMigrations: env.GITHUB_TOKEN
+        ? (sha) =>
+            fetchMigrationsAtCommit({ repo: env.SCHOOL_APP_REPO, sha, token: env.GITHUB_TOKEN! })
+        : undefined,
       log,
     },
     {

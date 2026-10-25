@@ -29,6 +29,7 @@ type Rollout = {
   released_through: number;
   batch_size: number;
   backup_policy: string;
+  scope?: string;
   halt_reason: string | null;
   created_by: string | null;
   created_at: string;
@@ -71,7 +72,8 @@ export function RolloutPanel({
         </h2>
         <StatusBadge status={rollout.status} />
         <span className="text-sm text-slate-500">
-          {p.done} of {p.total} schools done · batches of {rollout.batch_size} ·{" "}
+          {p.done} of {p.total} schools done
+          {rollout.scope === "school" ? "" : ` · batches of ${rollout.batch_size}`} ·{" "}
           {rollout.backup_policy === "skip_if_expand_only"
             ? "backups skipped when only expand migrations are pending"
             : "backup before every migration"}{" "}
@@ -160,7 +162,7 @@ export function RolloutPanel({
         </table>
       </div>
 
-      {isOwner && rollout.status === "running" && (
+      {isOwner && rollout.status === "running" && rollout.scope !== "school" && (
         <div className="space-y-3 border-t border-slate-200 pt-4">
           {c.waiting && (
             <p className="text-sm text-slate-600">

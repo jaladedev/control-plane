@@ -74,6 +74,9 @@ export function fakeStore(overrides: Partial<Store> = {}) {
     markBackupPruned: vi.fn(async () => {
       note("markBackupPruned");
     }),
+    schoolForAction: vi.fn(async () => null),
+    registryRows: vi.fn(async () => []),
+    registerRelease: vi.fn(async () => {}),
     ...overrides,
   };
   return store;

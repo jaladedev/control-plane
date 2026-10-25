@@ -1,6 +1,8 @@
 import { requirePage } from "@/lib/auth/guards";
 import { createClient } from "@/lib/supabase/server";
 import { RolloutPanel } from "@/components/RolloutPanel";
+import { OwnerActions } from "@/components/OwnerActions";
+import { RecentJobs, type RecentJob } from "@/components/RecentJobs";
 import { StatusBadge, ago } from "@/components/badges";
 import {
   appState,
@@ -17,6 +19,9 @@ const OK: Record<string, string> = {
   retried: "Step queued again. The rollout is running.",
   cancelled: "Rollout cancelled.",
   scanning: "Asked the worker to re-read every school's migrations.",
+  school_started: "Rollout of one school started. The worker picks it up in a moment.",
+  rollback_queued: "Rollback queued. The worker picks it up in a moment; see Recent actions.",
+  register_queued: "Release queued for registration. See Recent actions for the result.",
 };
 
 const short = (tag: string | null | undefined) => (tag ? tag.slice(0, 10) : "—");
@@ -33,7 +38,7 @@ export default async function MigrationsPage({
   const isOwner = actor.role === "owner";
   const supabase = await createClient();
 
-  const [releasesRes, migrationsRes, schoolsRes, activeRes, historyRes, queuedRes] =
+  const [releasesRes, migrationsRes, schoolsRes, activeRes, historyRes, queuedRes, jobsRes] =
     await Promise.all([
       supabase
         .from("releases")
@@ -59,6 +64,12 @@ export default async function MigrationsPage({
         .order("created_at", { ascending: false })
         .limit(5),
       supabase.from("jobs").select("created_at, run_after").eq("status", "queued"),
+      supabase
+        .from("jobs")
+        .select("id, type, status, error, result, payload, created_at, schools(slug)")
+        .in("type", ["school_rollback", "register_release"])
+        .order("created_at", { ascending: false })
+        .limit(8),
     ]);
 
   const releases = releasesRes.data ?? [];
@@ -66,6 +77,7 @@ export default async function MigrationsPage({
   const schools = schoolsRes.data ?? [];
   const active = activeRes.data;
   const history = historyRes.data ?? [];
+  const recentJobs = (jobsRes.data ?? []) as unknown as RecentJob[];
 
   const steps = active
     ? ((
@@ -189,6 +201,14 @@ export default async function MigrationsPage({
         </section>
       )}
 
+      {isOwner && (
+        <OwnerActions
+          releases={releases as never}
+          schools={schools as never}
+          rolloutActive={Boolean(active)}
+        />
+      )}
+      <RecentJobs jobs={recentJobs} />
       <section className="space-y-3">
         <h2 className="font-semibold">Version matrix</h2>
         <div className="overflow-x-auto rounded border border-slate-200 bg-white">

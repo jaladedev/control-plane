@@ -8,6 +8,7 @@ import {
 } from "@/lib/migrate/runner";
 import type { DeployCommand, DeployOutcome } from "@/lib/deploy/client";
 import type { ProbeResult } from "@/lib/health";
+import { planRegistration } from "@/lib/migrate/register";
 import type { Job, SchoolPatch, Store } from "@/worker/store";
 import type { SecretsProvider } from "@/worker/secrets";
 import { decideBackup, type BackupProvider } from "@/worker/backup";
@@ -30,6 +31,8 @@ export type HandlerDeps = {
   /** How many finished backups to keep per school; older ones are pruned. */
   backupKeep: number;
   log: (message: string) => void;
+  /** Reads a commit's migration files from GitHub. Absent when the worker has no GITHUB_TOKEN. */
+  fetchMigrations?: (tag: string) => Promise<{ name: string; content: string }[]>;
 };
 
 // What the step's result says about the backup: taken (and where), skipped (and
@@ -273,4 +276,117 @@ export async function handleSchemaScan(job: Job, deps: HandlerDeps): Promise<Han
   } finally {
     await conn?.close().catch(() => {});
   }
+}
+
+const TAG = /^[0-9a-f]{40}$/;
+const short = (tag: string | null | undefined) => (tag ? tag.slice(0, 12) : "unknown");
+
+// Takes one school back to the image it ran before. Unlike a deploy this is NOT
+// idempotent (the server swaps current and previous, so doing it twice puts the
+// school forward again), which is why the job has a single attempt, and why the
+// server must first agree about what is running: never act on a guess.
+export async function handleSchoolRollback(job: Job, deps: HandlerDeps): Promise<HandlerResult> {
+  const { store, secrets } = deps;
+  if (!job.school_id) return { ok: false, error: "The job has no school." };
+  const school = await store.schoolForAction(job.school_id);
+  if (!school) return { ok: false, error: "That school does not exist." };
+  const host = school.hostnames[0];
+  if (!host) return { ok: false, error: `${school.slug} has no hostname.` };
+  const from = school.image_tag;
+
+  try {
+    const state = await deps.deploy({ action: "status", slug: school.slug });
+    if (!state.ok) throw new StepFailure(`Could not read the server's state: ${state.message}`);
+    if (!from || state.tag !== from) {
+      throw new StepFailure(
+        `The server says ${short(state.tag)} is running but the dashboard says ${short(from)}. ` +
+          "Nothing was changed. Refresh versions, check the server, then try again."
+      );
+    }
+
+    const out = await deps.deploy({ action: "rollback", slug: school.slug });
+    if (!out.ok) throw new StepFailure(`Rollback failed: ${out.message}`);
+    if (!TAG.test(out.tag)) {
+      throw new StepFailure(
+        "The server did not say which version it went back to. Check it directly."
+      );
+    }
+    // The server confirmed this image is healthy, so record it before anything else.
+    await store.updateSchool(school.id, { image_tag: out.tag, app_version: out.tag });
+
+    const probe = await deps.probe(host, school.slug);
+    if (!probe.ok || probe.version !== out.tag) {
+      const why = probe.ok
+        ? `it reports version ${short(probe.version)}`
+        : (probe.error ?? "unhealthy");
+      throw new StepFailure(
+        `Rolled back to ${short(out.tag)}, but the school does not look right: ${why}. Check the server.`,
+        { to_tag: out.tag }
+      );
+    }
+    return { ok: true, result: { from_tag: from, to_tag: out.tag } };
+  } catch (error) {
+    const message = clip(secrets.redact(error instanceof Error ? error.message : String(error)));
+    const partial = error instanceof StepFailure ? error.partial : {};
+    return { ok: false, result: { from_tag: from, ...partial }, error: message };
+  }
+}
+
+// Registers a release from a commit's migrations on GitHub: the same rules as
+// the register-release CLI (planRegistration), with one difference. There is
+// no --baseline here: the first registration, which needs one, stays a CLI step.
+export async function handleRegisterRelease(job: Job, deps: HandlerDeps): Promise<HandlerResult> {
+  const { store } = deps;
+  const tag = String(job.payload.tag ?? "");
+  if (!TAG.test(tag))
+    return { ok: false, error: "The release must be a full 40-character commit hash." };
+  if (!deps.fetchMigrations) {
+    return {
+      ok: false,
+      error:
+        "The worker has no GITHUB_TOKEN, so it cannot read the school app's migrations. " +
+        "Set it, or register with npm run register-release.",
+    };
+  }
+
+  const files = await deps.fetchMigrations(tag); // a network error propagates: the job is retried
+  if (files.length === 0) return { ok: false, error: `No .sql files found at ${short(tag)}.` };
+
+  const registered = await store.registryRows();
+  const plan = planRegistration(files, registered);
+  if (plan.errors.length > 0) {
+    const first =
+      registered.length === 0
+        ? " The first registration needs --baseline: use npm run register-release."
+        : "";
+    return {
+      ok: false,
+      error: clip(`Cannot register ${short(tag)}: ${plan.errors.join(" ")}${first}`),
+    };
+  }
+
+  const notes = typeof job.payload.notes === "string" ? job.payload.notes : null;
+  const by = typeof job.payload.by === "string" ? job.payload.by : "dashboard";
+  try {
+    await store.registerRelease({
+      tag,
+      notes,
+      by,
+      migrations: plan.newMigrations.map((m) => ({
+        version: m.version,
+        name: m.name,
+        checksum: m.checksum,
+        kind: m.kind,
+        min_app_version: m.minAppVersion ?? "",
+        sql: m.sql,
+      })),
+    });
+  } catch (error) {
+    // A retry after a registration that landed but was not reported.
+    if (/already registered/i.test(error instanceof Error ? error.message : "")) {
+      return { ok: true, result: { already_registered: true, migrations: [] } };
+    }
+    throw error;
+  }
+  return { ok: true, result: { migrations: plan.newMigrations.map((m) => m.name) } };
 }

@@ -2,6 +2,8 @@ import {
   handleRolloutStep,
   handleSchemaScan,
   type HandlerDeps,
+  handleRegisterRelease,
+  handleSchoolRollback,
   type HandlerResult,
 } from "@/worker/handlers";
 
@@ -12,7 +14,7 @@ import {
 
 export type WorkerDeps = HandlerDeps & { workerId: string; heartbeatMs?: number };
 
-export const JOB_TYPES = ["rollout_step", "schema_scan"];
+export const JOB_TYPES = ["rollout_step", "schema_scan", "school_rollback", "register_release"];
 
 /** Processes at most one job. Returns false when the queue was empty. */
 export async function tick(deps: WorkerDeps): Promise<boolean> {
@@ -29,6 +31,8 @@ export async function tick(deps: WorkerDeps): Promise<boolean> {
     let out: HandlerResult;
     if (job.type === "rollout_step") out = await handleRolloutStep(job, deps);
     else if (job.type === "schema_scan") out = await handleSchemaScan(job, deps);
+    else if (job.type === "school_rollback") out = await handleSchoolRollback(job, deps);
+    else if (job.type === "register_release") out = await handleRegisterRelease(job, deps);
     else out = { ok: false, error: `Unknown job type ${job.type}.` };
     await store.finishJob(job.id, workerId, out.ok, out.result ?? null, out.error ?? null);
     log(`job ${job.id} ${out.ok ? "succeeded" : `failed: ${out.error}`}`);

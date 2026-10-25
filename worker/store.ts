@@ -77,7 +77,32 @@ export interface Store {
   ): Promise<void>;
   backupsToPrune(schoolId: string, keep: number): Promise<BackupRow[]>;
   markBackupPruned(backupId: string): Promise<void>;
+  schoolForAction(schoolId: string): Promise<SchoolForAction | null>;
+  registryRows(): Promise<{ version: string; name: string; checksum: string }[]>;
+  registerRelease(args: RegisterReleaseArgs): Promise<void>;
 }
+
+export type SchoolForAction = {
+  id: string;
+  slug: string;
+  status: string;
+  hostnames: string[];
+  image_tag: string | null;
+};
+
+export type RegisterReleaseArgs = {
+  tag: string;
+  notes: string | null;
+  by: string;
+  migrations: {
+    version: string;
+    name: string;
+    checksum: string;
+    kind: string;
+    min_app_version: string;
+    sql: string;
+  }[];
+};
 
 function check<T>(res: { data: T; error: { message: string } | null }, what: string): T {
   if (res.error) throw new Error(`${what}: ${res.error.message}`);
@@ -353,5 +378,35 @@ export class SupabaseStore implements Store {
   }
   async markBackupPruned(backupId: string) {
     check(await this.db.rpc("mark_backup_pruned", { p_backup: backupId }), "mark_backup_pruned");
+  }
+  async schoolForAction(schoolId: string): Promise<SchoolForAction | null> {
+    const row = check(
+      await this.db
+        .from("schools")
+        .select("id, slug, status, hostnames, image_tag")
+        .eq("id", schoolId)
+        .maybeSingle(),
+      "load school"
+    );
+    return row ? { ...row, hostnames: row.hostnames ?? [] } : null;
+  }
+
+  async registryRows() {
+    return need(
+      await this.db.from("migrations").select("version, name, checksum").order("version"),
+      "load registry"
+    ) as { version: string; name: string; checksum: string }[];
+  }
+
+  async registerRelease(a: RegisterReleaseArgs) {
+    check(
+      await this.db.rpc("register_release", {
+        p_tag: a.tag,
+        p_notes: a.notes,
+        p_by: a.by,
+        p_migrations: a.migrations,
+      }),
+      "register_release"
+    );
   }
 }
