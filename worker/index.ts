@@ -86,6 +86,7 @@ async function main() {
       pollMs: env.POLL_MS,
       staleMinutes: env.STALE_MINUTES,
       scanEveryMs: env.SCAN_EVERY_MINUTES * 60_000,
+      autoSuspendAfterDays: env.AUTO_SUSPEND_AFTER_DAYS === 0 ? null : env.AUTO_SUSPEND_AFTER_DAYS,
       signal: controller.signal,
     }
   );

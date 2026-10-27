@@ -46,6 +46,13 @@ const schema = z.object({
   WORKER_ID: z.string().min(1).default(`${hostname()}-${process.pid}`),
   POLL_MS: z.coerce.number().int().min(500).max(60_000).default(3000),
   STALE_MINUTES: z.coerce.number().int().min(5).max(240).default(45),
+  // Suspend a school once its licence, grace included, ended this many days ago and
+  // it has no open invoice or waiting claim. 0 turns this off.
+  AUTO_SUSPEND_AFTER_DAYS: z.coerce
+    .number()
+    .int()
+    .refine((v) => v === 0 || (v >= 7 && v <= 365), "must be 0 (off) or 7 to 365")
+    .default(90),
   SCAN_EVERY_MINUTES: z.coerce.number().int().min(5).max(1440).default(30),
 });
 

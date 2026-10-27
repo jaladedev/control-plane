@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { MAX_BODY_BYTES, handleClaim, type ClaimDeps } from "@/lib/billing/claim-endpoint";
+import {
+  CLAIM_LIMITS,
+  MAX_BODY_BYTES,
+  handleClaim,
+  type ClaimDeps,
+} from "@/lib/billing/claim-endpoint";
 import { generateClaimKeyPair, signClaim } from "@/lib/billing/claim-signature";
 
 const keys = generateClaimKeyPair();
@@ -22,6 +27,7 @@ function setup(over: Partial<ClaimDeps> = {}, status = "active") {
       slug === "greenfield" ? { id: "school-1", status } : null
     ),
     publicKeys: vi.fn(async () => [keys.publicKey]),
+    rateLimit: vi.fn(async () => true),
     audit: vi.fn(async () => {}),
     submit: vi.fn(async () => ({ claimId: "claim-id-1" })),
     ...over,
@@ -33,6 +39,7 @@ function setup(over: Partial<ClaimDeps> = {}, status = "active") {
       timestamp?: number | string | null;
       signature?: string | null;
       key?: string;
+      ip?: string | null;
     } = {}
   ) => {
     const timestamp = o.timestamp === undefined ? TS : o.timestamp;
@@ -47,7 +54,13 @@ function setup(over: Partial<ClaimDeps> = {}, status = "active") {
           })
         : o.signature;
     return handleClaim(
-      { slug, timestamp: timestamp === null ? null : String(timestamp), signature, rawBody },
+      {
+        slug,
+        timestamp: timestamp === null ? null : String(timestamp),
+        signature,
+        rawBody,
+        ip: o.ip === undefined ? "203.0.113.7" : o.ip,
+      },
       deps,
       NOW
     );
@@ -194,5 +207,67 @@ describe("after authentication", () => {
     });
     await expect(s.send(body())).rejects.toThrow(/audit down/);
     expect(s.deps.submit).not.toHaveBeenCalled();
+  });
+});
+
+describe("rate limiting", () => {
+  it("counts the caller's address before anything is looked up", async () => {
+    const { deps, send } = setup({ rateLimit: vi.fn(async () => false) });
+    const res = await send(body(), { ip: "198.51.100.9" });
+    expect(res.status).toBe(429);
+    expect(res.headers).toEqual({ "retry-after": String(CLAIM_LIMITS.perAddress.windowSeconds) });
+    expect(deps.rateLimit).toHaveBeenCalledWith(
+      "claim:ip:198.51.100.9",
+      CLAIM_LIMITS.perAddress.windowSeconds,
+      CLAIM_LIMITS.perAddress.max
+    );
+    expect(deps.findSchool).not.toHaveBeenCalled();
+    expect(deps.publicKeys).not.toHaveBeenCalled();
+    expect(deps.submit).not.toHaveBeenCalled();
+  });
+
+  it("uses one shared bucket when the address is unknown", async () => {
+    const { deps, send } = setup();
+    await send(body(), { ip: null });
+    expect(deps.rateLimit).toHaveBeenCalledWith(
+      "claim:ip:unknown",
+      expect.any(Number),
+      expect.any(Number)
+    );
+  });
+
+  it("limits a school that has proved itself, per school", async () => {
+    const rateLimit = vi.fn(async (bucket: string) => !bucket.startsWith("claim:school:"));
+    const { deps, send } = setup({ rateLimit });
+    const res = await send(body());
+    expect(res.status).toBe(429);
+    expect(rateLimit).toHaveBeenCalledWith(
+      "claim:school:school-1",
+      CLAIM_LIMITS.perSchool.windowSeconds,
+      CLAIM_LIMITS.perSchool.max
+    );
+    expect(deps.audit).not.toHaveBeenCalled();
+    expect(deps.submit).not.toHaveBeenCalled();
+  });
+
+  it("does not spend a school's allowance on a request that fails authentication", async () => {
+    const { deps, send } = setup();
+    expect(await send(body(), { key: generateClaimKeyPair().privateKey })).toEqual(REJECTED);
+    expect(deps.rateLimit).toHaveBeenCalledTimes(1);
+    expect(deps.rateLimit).toHaveBeenCalledWith(
+      "claim:ip:203.0.113.7",
+      expect.any(Number),
+      expect.any(Number)
+    );
+  });
+
+  it("fails open when the limiter itself breaks, so a school can still pay", async () => {
+    const { deps, send } = setup({
+      rateLimit: vi.fn(async () => {
+        throw new Error("database down");
+      }),
+    });
+    expect((await send(body())).status).toBe(201);
+    expect(deps.submit).toHaveBeenCalledTimes(1);
   });
 });

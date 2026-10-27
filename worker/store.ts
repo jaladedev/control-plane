@@ -92,6 +92,8 @@ export interface Store {
   claimForNotice(claimId: string): Promise<ClaimForNotice | null>;
   markClaimNotified(claimId: string, kind: "claim" | "reminder"): Promise<void>;
   enqueueClaimReminders(): Promise<number>;
+  /** Suspends active schools whose licence ended more than `afterDays` ago. Audited in the database. */
+  suspendLapsedSchools(afterDays: number): Promise<{ slug: string; graceUntil: string }[]>;
 
   loadStep(stepId: string): Promise<StepContext | null>;
   startStep(stepId: string): Promise<boolean>;
@@ -494,5 +496,13 @@ export class SupabaseStore implements Store {
     return Number(
       need(await this.db.rpc("enqueue_claim_reminders", {}), "enqueue_claim_reminders") ?? 0
     );
+  }
+
+  async suspendLapsedSchools(afterDays: number): Promise<{ slug: string; graceUntil: string }[]> {
+    const rows = need(
+      await this.db.rpc("suspend_lapsed_schools", { p_after_days: afterDays }),
+      "suspend_lapsed_schools"
+    ) as { slug: string; grace_until: string }[];
+    return rows.map((r) => ({ slug: r.slug, graceUntil: r.grace_until }));
   }
 }

@@ -21,6 +21,8 @@ export async function POST(request: NextRequest) {
         timestamp: request.headers.get("x-claim-timestamp"),
         signature: request.headers.get("x-claim-signature"),
         rawBody,
+        // First address in the chain is the original caller when a proxy sets it.
+        ip: request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null,
       },
       {
         findSchool: async (s) => {
@@ -38,6 +40,16 @@ export async function POST(request: NextRequest) {
             .eq("school_id", schoolId)
             .is("revoked_at", null);
           return (data ?? []).map((k) => k.public_key as string);
+        },
+        rateLimit: async (bucket, windowSeconds, max) => {
+          const { data, error } = await admin.rpc("rate_limit_hit", {
+            p_bucket: bucket,
+            p_window_seconds: windowSeconds,
+            p_max: max,
+          });
+          if (error) throw new Error(error.message);
+          // Only an explicit "no" blocks; anything unexpected lets the school through.
+          return data !== false;
         },
         audit: (action, schoolId, details) =>
           writeAudit({ email: `school:${slug}`, role: "school" }, { action, schoolId, details }),
@@ -62,7 +74,7 @@ export async function POST(request: NextRequest) {
         },
       }
     );
-    return NextResponse.json(result.body, { status: result.status });
+    return NextResponse.json(result.body, { status: result.status, headers: result.headers });
   } catch {
     return NextResponse.json(
       { ok: false, error: "The claim could not be recorded. Try again." },

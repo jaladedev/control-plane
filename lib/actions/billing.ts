@@ -6,6 +6,7 @@ import { isKeyEncoding } from "@/lib/billing/claim-signature";
 import { nairaToKobo } from "@/lib/billing/money";
 import {
   buildQuote,
+  buildTopupLine,
   priceAt,
   type OverrideRow,
   type PriceRow,
@@ -248,6 +249,176 @@ export async function extendInvoice(
         p_reason: why,
       })
   );
+}
+
+// ---------------------------------------------------------------------------
+// Top-ups and refunds
+// ---------------------------------------------------------------------------
+
+/** A paid invoice can be refunded for this many days after it was paid. */
+export const REFUND_WINDOW_DAYS = 14;
+
+/**
+ * Invoices extra students on a session that is already paid, at today's
+ * extra-student price (and the school's override for that session, if any).
+ * Nothing changes for the school until the top-up is marked paid.
+ */
+export async function createTopup(
+  subscriptionId: string,
+  extraStudents: unknown
+): Promise<{ id: string; totalKobo: number }> {
+  const actor = await requireActor(BILLING);
+  const id = z.string().uuid().parse(subscriptionId);
+  const count = z.coerce
+    .number()
+    .int("Extra students must be a whole number.")
+    .min(1, "Enter at least one extra student.")
+    .max(100_000)
+    .parse(extraStudents);
+  const admin = createAdminClient();
+  const { data: sub } = await admin
+    .from("subscriptions")
+    .select("school_id, reference, session")
+    .eq("id", id)
+    .maybeSingle();
+  if (!sub) throw new Error("That invoice does not exist.");
+  const { data: prices } = await admin
+    .from("price_catalog")
+    .select("item, amount_kobo, count, effective_from, created_at");
+  const { data: overrides } = await admin
+    .from("school_price_overrides")
+    .select("item, session, amount_kobo, percent_off, reason, created_at")
+    .eq("school_id", sub.school_id as string);
+  const line = buildTopupLine({
+    session: sub.session as string,
+    asOf: new Date(),
+    prices: (prices ?? []) as PriceRow[],
+    overrides: (overrides ?? []) as OverrideRow[],
+    extraStudents: count,
+  });
+  const topupId = await withAudit(
+    actor,
+    {
+      action: "topup.create",
+      schoolId: sub.school_id as string,
+      details: {
+        reference: sub.reference,
+        extra_students: count,
+        total_kobo: line.total_kobo,
+        unit_kobo: line.unit_kobo,
+        override: line.override?.kind ?? null,
+      },
+    },
+    async () =>
+      (await rpc(admin, "create_topup", {
+        p_sub: id,
+        p_extra: count,
+        p_amount: line.total_kobo,
+        p_line: line,
+        p_by: actor.email,
+      })) as string
+  );
+  return { id: topupId, totalKobo: line.total_kobo };
+}
+
+async function topupSchool(admin: Admin, id: string) {
+  const { data } = await admin
+    .from("subscription_topups")
+    .select("school_id, reference")
+    .eq("id", id)
+    .maybeSingle();
+  if (!data) throw new Error("That top-up does not exist.");
+  return { schoolId: data.school_id as string, reference: data.reference as string };
+}
+
+export async function cancelTopup(topupId: string, reason: unknown): Promise<void> {
+  const actor = await requireActor(BILLING);
+  const id = z.string().uuid().parse(topupId);
+  const why = reasonSchema.parse(reason);
+  const admin = createAdminClient();
+  const top = await topupSchool(admin, id);
+  await withAudit(
+    actor,
+    {
+      action: "topup.cancel",
+      schoolId: top.schoolId,
+      details: { reference: top.reference, reason: why },
+    },
+    () => rpc(admin, "cancel_topup", { p_topup: id, p_by: actor.email, p_reason: why })
+  );
+}
+
+/** The money was seen in the bank. The amount typed must equal the top-up. */
+export async function markTopupPaid(
+  topupId: string,
+  amountNaira: unknown,
+  paymentRef: unknown,
+  reason: unknown
+): Promise<void> {
+  const actor = await requireActor(BILLING);
+  const id = z.string().uuid().parse(topupId);
+  const amount = nairaToKobo(z.string().parse(amountNaira));
+  const ref = z.preprocess(blank, z.string().trim().max(120).optional()).parse(paymentRef);
+  const why = reasonSchema.parse(reason);
+  const admin = createAdminClient();
+  const top = await topupSchool(admin, id);
+  await withAudit(
+    actor,
+    {
+      action: "topup.mark_paid",
+      schoolId: top.schoolId,
+      details: {
+        reference: top.reference,
+        amount_kobo: amount,
+        payment_ref: ref ?? null,
+        reason: why,
+      },
+    },
+    () =>
+      rpc(admin, "mark_topup_paid", {
+        p_topup: id,
+        p_amount_kobo: amount,
+        p_ref: ref ?? "",
+        p_by: actor.email,
+        p_reason: why,
+      })
+  );
+}
+
+/**
+ * Records a refund and ends the licence at once. The money itself goes back from
+ * your bank, not from here. Owner only, the whole invoice (top-ups included), and
+ * only inside the refund window; the word REFUND must be typed.
+ */
+export async function refundInvoice(
+  subscriptionId: string,
+  reason: unknown,
+  confirm: unknown
+): Promise<{ refundKobo: number }> {
+  const actor = await requireActor(OWNER);
+  const id = z.string().uuid().parse(subscriptionId);
+  const why = reasonSchema.parse(reason);
+  if (confirm !== "REFUND") throw new Error("Type REFUND to confirm.");
+  const admin = createAdminClient();
+  const sub = await subscriptionSchool(admin, id);
+  const total = await withAudit(
+    actor,
+    {
+      action: "subscription.refund",
+      schoolId: sub.schoolId,
+      details: { reference: sub.reference, reason: why, window_days: REFUND_WINDOW_DAYS },
+    },
+    async () =>
+      Number(
+        await rpc(admin, "refund_subscription", {
+          p_sub: id,
+          p_by: actor.email,
+          p_reason: why,
+          p_window_days: REFUND_WINDOW_DAYS,
+        })
+      )
+  );
+  return { refundKobo: total };
 }
 
 // ---------------------------------------------------------------------------

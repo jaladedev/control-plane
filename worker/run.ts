@@ -75,6 +75,8 @@ export type LoopOptions = {
   pollMs: number;
   staleMinutes: number;
   scanEveryMs: number;
+  /** Suspend schools whose licence ended this many days ago. Absent or null: never. */
+  autoSuspendAfterDays?: number | null;
   signal: AbortSignal;
 };
 
@@ -83,6 +85,7 @@ export async function runWorker(deps: WorkerDeps, opts: LoopOptions): Promise<vo
   let lastStale = 0;
   let lastScan = 0;
   let lastReminders = 0;
+  let lastSuspendCheck = 0;
   // Housekeeping must never stand between the worker and its jobs: a failure
   // is logged and tried again next interval, and the loop carries on.
   const housekeeping = async (name: string, due: boolean, fn: () => Promise<void>) => {
@@ -111,6 +114,32 @@ export async function runWorker(deps: WorkerDeps, opts: LoopOptions): Promise<vo
         const n = await deps.store.enqueueClaimReminders();
         if (n > 0) deps.log(`queued ${n} claim reminder(s)`);
       });
+      const afterDays = opts.autoSuspendAfterDays;
+      await housekeeping(
+        "automatic suspension",
+        afterDays != null && now - lastSuspendCheck >= 60 * 60_000,
+        async () => {
+          lastSuspendCheck = now;
+          const suspended = await deps.store.suspendLapsedSchools(afterDays!);
+          for (const school of suspended) {
+            deps.log(
+              `suspended ${school.slug}: its licence ended ${school.graceUntil}, more than ${afterDays} days ago`
+            );
+            // A notice that cannot be sent never undoes the suspension.
+            try {
+              await deps.telegram?.send(
+                `School suspended for a lapsed licence: ${school.slug}\n` +
+                  `Its licence (grace included) ended ${school.graceUntil.slice(0, 10)}. ` +
+                  `A confirmed payment lifts this automatically.`
+              );
+            } catch (error) {
+              deps.log(
+                `suspension notice failed: ${error instanceof Error ? error.message : error}`
+              );
+            }
+          }
+        }
+      );
       if (!(await tick(deps))) await sleep(opts.pollMs, opts.signal);
     } catch (error) {
       deps.log(`worker loop error: ${error instanceof Error ? error.message : error}`);

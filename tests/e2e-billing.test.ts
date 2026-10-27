@@ -148,6 +148,7 @@ describe.skipIf(!ADMIN_URL)(
             body: raw,
           }),
           rawBody: raw,
+          ip: "203.0.113.7",
         },
         {
           findSchool: async (slug) =>
@@ -160,6 +161,15 @@ describe.skipIf(!ADMIN_URL)(
                 [id]
               )
             ).map((r) => r.public_key),
+          rateLimit: async (bucket, windowSeconds, max) => {
+            const r = await rpc("rate_limit_hit", {
+              p_bucket: bucket,
+              p_window_seconds: windowSeconds,
+              p_max: max,
+            });
+            if (r.error) throw new Error(r.error.message);
+            return r.data === true;
+          },
           audit: async (action, id, details) =>
             void (await cp.query(
               "insert into audit_log (actor_email, role, action, school_id, details) values ('school:alpha','school',$1,$2,$3)",
@@ -567,6 +577,98 @@ describe.skipIf(!ADMIN_URL)(
       );
       expect(stale[0].applied).toBe(false);
       expect((await q(school, "select version from school_license"))[0].version).toBe("2");
+    });
+
+    it("answers 429 once a school sends too many claims, using the real counter", async () => {
+      // Invalid bodies still count: they pass the signature, then fail validation.
+      for (let i = 0; i < 10; i++) {
+        expect((await post({ nonsense: i })).status).toBe(400);
+      }
+      const res = await post({ nonsense: 11 });
+      expect(res.status).toBe(429);
+      expect(res.headers).toEqual({ "retry-after": "600" });
+      expect(
+        (await q(cp, "select hits from rate_limit_hits where bucket like 'claim:school:%'"))[0].hits
+      ).toBe(11);
+    });
+
+    it("raises the school's allowance with a paid top-up and pushes it", async () => {
+      const { id } = await invoice(0);
+      await call("mark_subscription_paid", { p_sub: id, p_ref: "", p_by: "f", p_reason: "paid" });
+      await drain();
+      const topup = (await call("create_topup", {
+        p_sub: id,
+        p_extra: 12,
+        p_amount: 12 * 5_000,
+        p_line: JSON.stringify({ item: "extra_student", unit_kobo: 5_000 }),
+        p_by: "finance",
+      })) as string;
+      await call("mark_topup_paid", {
+        p_topup: topup,
+        p_amount_kobo: 60_000,
+        p_ref: "NIP77",
+        p_by: "finance",
+        p_reason: "on the statement",
+      });
+      await drain();
+      const row = (await q(school, "select version, student_cap from school_license"))[0];
+      expect(row).toMatchObject({ version: "2", student_cap: 312 });
+      expect(
+        await one("select license_push_error from schools where id = $1", [schoolId])
+      ).toMatchObject({
+        license_push_error: null,
+      });
+    });
+
+    it("ends the school's licence in its own database when a payment is refunded", async () => {
+      const { id, qt } = await invoice(0);
+      await call("mark_subscription_paid", { p_sub: id, p_ref: "", p_by: "f", p_reason: "paid" });
+      await drain();
+      const refunded = await call("refund_subscription", {
+        p_sub: id,
+        p_by: "owner",
+        p_reason: "paid by mistake",
+        p_window_days: 14,
+      });
+      expect(Number(refunded)).toBe(qt.total_kobo);
+      await drain();
+      const lic = (
+        await q(school, "select version, valid_until, grace_until from school_license")
+      )[0];
+      expect(lic.version).toBe("2");
+      expect(new Date(lic.valid_until).getTime()).toBeLessThanOrEqual(Date.now());
+      expect(new Date(lic.grace_until).getTime()).toBeLessThanOrEqual(Date.now());
+    });
+
+    it("suspends a long-lapsed school through the store, and a confirmed payment lifts it", async () => {
+      await cp.query(
+        "update schools set license_valid_until = now() - interval '200 days', license_grace_until = now() - interval '120 days' where id = $1",
+        [schoolId]
+      );
+      const done = await deps.store.suspendLapsedSchools(90);
+      expect(done.map((d) => d.slug)).toEqual(["alpha"]);
+      expect(
+        await one("select status, suspended_reason from schools where id = $1", [schoolId])
+      ).toEqual({
+        status: "suspended",
+        suspended_reason: "lapsed",
+      });
+      expect(await deps.store.suspendLapsedSchools(90)).toEqual([]);
+
+      // The school pays an invoice made before it was suspended.
+      await cp.query(
+        "update schools set status = 'active', suspended_reason = null where id = $1",
+        [schoolId]
+      );
+      const { id } = await invoice(0);
+      await cp.query(
+        "update schools set status = 'suspended', suspended_reason = 'lapsed', suspended_at = now() where id = $1",
+        [schoolId]
+      );
+      await call("mark_subscription_paid", { p_sub: id, p_ref: "", p_by: "f", p_reason: "paid" });
+      expect((await one("select status from schools where id = $1", [schoolId])).status).toBe(
+        "active"
+      );
     });
   }
 );

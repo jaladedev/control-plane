@@ -79,6 +79,7 @@ export function fakeStore(overrides: Partial<Store> = {}) {
     claimForNotice: vi.fn(async () => null),
     markClaimNotified: vi.fn(async () => {}),
     enqueueClaimReminders: vi.fn(async () => 0),
+    suspendLapsedSchools: vi.fn(async () => []),
     schoolForAction: vi.fn(async () => null),
     registryRows: vi.fn(async () => []),
     registerRelease: vi.fn(async () => {}),

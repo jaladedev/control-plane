@@ -16,6 +16,10 @@ const schema = z.object({
   // to sign read-only support links. Optional: without it support links are
   // refused. Interim, like SCHOOL_SERVICE_KEYS.
   SCHOOL_SIGNING_SECRETS: z.string().optional(),
+  // Who the invoice and receipt PDFs come from. Optional: without a name the PDFs
+  // carry no issuer heading. LINES is separated by "|" (address, bank details...).
+  BILLING_ISSUER_NAME: z.string().max(80).optional(),
+  BILLING_ISSUER_LINES: z.string().max(400).optional(),
 });
 
 const parsed = schema.safeParse({
@@ -25,6 +29,8 @@ const parsed = schema.safeParse({
   CRON_SECRET: process.env.CRON_SECRET || undefined,
   SCHOOL_SERVICE_KEYS: process.env.SCHOOL_SERVICE_KEYS || undefined,
   SCHOOL_SIGNING_SECRETS: process.env.SCHOOL_SIGNING_SECRETS || undefined,
+  BILLING_ISSUER_NAME: process.env.BILLING_ISSUER_NAME || undefined,
+  BILLING_ISSUER_LINES: process.env.BILLING_ISSUER_LINES || undefined,
 });
 
 if (!parsed.success) {

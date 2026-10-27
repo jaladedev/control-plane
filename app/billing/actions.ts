@@ -6,10 +6,14 @@ import { ZodError } from "zod";
 import {
   addSigningKey,
   cancelInvoice,
+  cancelTopup,
   confirmClaim,
+  createTopup,
   createInvoice,
   extendInvoice,
   markInvoicePaid,
+  markTopupPaid,
+  refundInvoice,
   rejectClaim,
   revokeSigningKey,
   setPrice,
@@ -126,4 +130,28 @@ export const revokeSigningKeyAction = async (f: FormData) =>
     `/schools/${text(f, "schoolId")}`,
     () => revokeSigningKey(text(f, "keyId")),
     "key_revoked"
+  );
+
+export const createTopupAction = async (f: FormData) =>
+  respond(
+    "/billing",
+    () => createTopup(text(f, "subscriptionId"), f.get("extraStudents")),
+    "topup_created"
+  );
+
+export const cancelTopupAction = async (f: FormData) =>
+  respond("/billing", () => cancelTopup(text(f, "topupId"), f.get("reason")), "topup_cancelled");
+
+export const markTopupPaidAction = async (f: FormData) =>
+  respond(
+    "/billing",
+    () => markTopupPaid(text(f, "topupId"), f.get("amount"), f.get("paymentRef"), f.get("reason")),
+    "topup_paid"
+  );
+
+export const refundInvoiceAction = async (f: FormData) =>
+  respond(
+    "/billing",
+    () => refundInvoice(text(f, "subscriptionId"), f.get("reason"), f.get("confirm")),
+    "refunded"
   );

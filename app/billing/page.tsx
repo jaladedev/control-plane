@@ -5,9 +5,13 @@ import { formatNaira } from "@/lib/billing/money";
 import { ago } from "@/components/badges";
 import {
   cancelInvoiceAction,
+  cancelTopupAction,
   confirmClaimAction,
+  createTopupAction,
   extendInvoiceAction,
   markPaidAction,
+  markTopupPaidAction,
+  refundInvoiceAction,
   rejectClaimAction,
 } from "./actions";
 
@@ -25,7 +29,15 @@ const OK: Record<string, string> = {
   claim_confirmed:
     "Claim confirmed and the invoice marked paid. The school's licence is being updated.",
   claim_rejected: "Claim rejected. The invoice is open again.",
+  topup_created: "Top-up invoiced. Nothing changes for the school until you mark it paid.",
+  topup_cancelled: "Top-up cancelled.",
+  topup_paid: "Top-up paid. The school's student allowance is being raised.",
+  refunded:
+    "Refund recorded and the licence ended. Now send the money back from your bank; this screen does not move money.",
 };
+
+// Same window as the database applies (REFUND_WINDOW_DAYS in lib/actions/billing.ts).
+const REFUND_DAYS = 14;
 
 const field = "rounded border border-slate-300 px-2 py-1 text-sm";
 const STATUS: Record<string, string> = {
@@ -44,11 +56,11 @@ export default async function BillingPage({
 }: {
   searchParams: Promise<{ ok?: string; error?: string }>;
 }) {
-  await requirePage(["owner", "finance"]);
+  const actor = await requirePage(["owner", "finance"]);
   const { ok, error } = await searchParams;
   const supabase = await createClient();
 
-  const [claimsRes, subsRes, schoolsRes, decidedRes] = await Promise.all([
+  const [claimsRes, subsRes, schoolsRes, decidedRes, topupsRes] = await Promise.all([
     supabase
       .from("payment_claims")
       .select(
@@ -59,9 +71,9 @@ export default async function BillingPage({
     supabase
       .from("subscriptions")
       .select(
-        "id, school_id, session, reference, amount_kobo, status, method, paid_at, valid_until, grace_until, created_at"
+        "id, school_id, session, reference, amount_kobo, topup_kobo, status, method, paid_at, valid_until, grace_until, created_at, refund_kobo"
       )
-      .in("status", ["pending", "pending_confirmation", "paid"])
+      .in("status", ["pending", "pending_confirmation", "paid", "refunded"])
       .order("created_at", { ascending: false })
       .limit(60),
     supabase.from("schools").select("id, slug, name").order("slug"),
@@ -71,6 +83,11 @@ export default async function BillingPage({
       .neq("status", "pending")
       .order("decided_at", { ascending: false })
       .limit(10),
+    supabase
+      .from("subscription_topups")
+      .select("id, school_id, subscription_id, reference, extra_students, amount_kobo, created_at")
+      .eq("status", "pending")
+      .order("created_at", { ascending: true }),
   ]);
 
   const schools = new Map((schoolsRes.data ?? []).map((s) => [s.id as string, s]));
@@ -79,6 +96,7 @@ export default async function BillingPage({
   const subById = new Map(subs.map((s) => [s.id as string, s]));
   const claims = claimsRes.data ?? [];
   const decided = decidedRes.data ?? [];
+  const topups = topupsRes.data ?? [];
 
   return (
     <div className="space-y-8">
@@ -167,6 +185,66 @@ export default async function BillingPage({
         })}
       </section>
 
+      {topups.length > 0 && (
+        <section className="space-y-3">
+          <h2 className="font-semibold">Top-ups waiting for payment ({topups.length})</h2>
+          <p className="text-sm text-slate-600">
+            Extra students on a paid session. Mark one paid only after you have seen the money in
+            your bank statement; the school&apos;s allowance goes up then, not before.
+          </p>
+          {topups.map((t) => (
+            <div
+              key={t.id as string}
+              className="space-y-3 rounded border border-slate-200 bg-white p-4 text-sm"
+            >
+              <div className="flex flex-wrap gap-x-6 gap-y-1">
+                <span className="font-medium">{nameOf(t.school_id as string)}</span>
+                <span className="font-mono text-xs">{t.reference as string}</span>
+                <span>{t.extra_students as number} extra students</span>
+                <span>{formatNaira(Number(t.amount_kobo))}</span>
+                <span className="text-slate-500">{ago(t.created_at as string)}</span>
+              </div>
+              <div className="flex flex-wrap gap-6">
+                <form action={markTopupPaidAction} className="flex flex-wrap items-end gap-2">
+                  <input type="hidden" name="topupId" value={t.id as string} />
+                  <label className="block">
+                    <span className="mb-1 block text-slate-700">
+                      Amount your bank shows (naira)
+                    </span>
+                    <input
+                      name="amount"
+                      inputMode="decimal"
+                      autoComplete="off"
+                      className={`${field} w-40`}
+                    />
+                  </label>
+                  <input
+                    name="paymentRef"
+                    placeholder="Bank reference (optional)"
+                    className={`${field} w-48`}
+                  />
+                  <input name="reason" placeholder="What you checked" className={`${field} w-48`} />
+                  <button className="rounded bg-green-700 px-3 py-1.5 text-white hover:bg-green-800">
+                    Mark paid
+                  </button>
+                </form>
+                <form action={cancelTopupAction} className="flex flex-wrap items-end gap-2">
+                  <input type="hidden" name="topupId" value={t.id as string} />
+                  <input
+                    name="reason"
+                    placeholder="Why it is cancelled"
+                    className={`${field} w-48`}
+                  />
+                  <button className="rounded border border-red-300 px-3 py-1.5 text-red-700 hover:bg-red-50">
+                    Cancel
+                  </button>
+                </form>
+              </div>
+            </div>
+          ))}
+        </section>
+      )}
+
       <section className="space-y-3">
         <h2 className="font-semibold">Invoices</h2>
         <div className="overflow-x-auto rounded border border-slate-200 bg-white">
@@ -235,30 +313,91 @@ export default async function BillingPage({
                       </>
                     )}
                     {s.status === "paid" && (
-                      <details>
-                        <summary className="cursor-pointer text-blue-700">Extend</summary>
-                        <form action={extendInvoiceAction} className="mt-2 space-y-2">
-                          <input type="hidden" name="subscriptionId" value={s.id as string} />
-                          <label className="block">
-                            <span className="text-xs text-slate-600">
-                              New valid-until (later than {day(s.valid_until as string)})
-                            </span>
-                            <input name="validUntil" type="date" className={`${field} w-44`} />
-                          </label>
-                          <input
-                            name="graceDays"
-                            type="number"
-                            min={0}
-                            max={180}
-                            placeholder="Grace days (14)"
-                            className={`${field} w-44`}
-                          />
-                          <input name="reason" placeholder="Why" className={`${field} w-56`} />
-                          <button className="rounded bg-slate-900 px-3 py-1 text-white">
-                            Extend
-                          </button>
-                        </form>
-                      </details>
+                      <>
+                        <details>
+                          <summary className="cursor-pointer text-blue-700">Extend</summary>
+                          <form action={extendInvoiceAction} className="mt-2 space-y-2">
+                            <input type="hidden" name="subscriptionId" value={s.id as string} />
+                            <label className="block">
+                              <span className="text-xs text-slate-600">
+                                New valid-until (later than {day(s.valid_until as string)})
+                              </span>
+                              <input name="validUntil" type="date" className={`${field} w-44`} />
+                            </label>
+                            <input
+                              name="graceDays"
+                              type="number"
+                              min={0}
+                              max={180}
+                              placeholder="Grace days (14)"
+                              className={`${field} w-44`}
+                            />
+                            <input name="reason" placeholder="Why" className={`${field} w-56`} />
+                            <button className="rounded bg-slate-900 px-3 py-1 text-white">
+                              Extend
+                            </button>
+                          </form>
+                        </details>
+                        <details>
+                          <summary className="cursor-pointer text-blue-700">
+                            Top up students
+                          </summary>
+                          <form action={createTopupAction} className="mt-2 space-y-2">
+                            <input type="hidden" name="subscriptionId" value={s.id as string} />
+                            <input
+                              name="extraStudents"
+                              type="number"
+                              min={1}
+                              placeholder="Extra students"
+                              className={`${field} w-44`}
+                            />
+                            <button className="rounded bg-slate-900 px-3 py-1 text-white">
+                              Invoice top-up
+                            </button>
+                          </form>
+                        </details>
+                        {actor.role === "owner" &&
+                          Date.now() - Date.parse(s.paid_at as string) <=
+                            REFUND_DAYS * 86_400_000 && (
+                            <details>
+                              <summary className="cursor-pointer text-red-700">Refund</summary>
+                              <form action={refundInvoiceAction} className="mt-2 space-y-2">
+                                <input type="hidden" name="subscriptionId" value={s.id as string} />
+                                <p className="max-w-xs text-xs text-slate-600">
+                                  Ends the licence now and records the refund of{" "}
+                                  {formatNaira(Number(s.amount_kobo) + Number(s.topup_kobo))}. Send
+                                  the money back from your bank yourself.
+                                </p>
+                                <input
+                                  name="reason"
+                                  placeholder="Why"
+                                  className={`${field} w-56`}
+                                />
+                                <input
+                                  name="confirm"
+                                  placeholder="Type REFUND"
+                                  autoComplete="off"
+                                  className={`${field} w-56`}
+                                />
+                                <button className="rounded border border-red-300 px-3 py-1 text-red-700">
+                                  Refund invoice
+                                </button>
+                              </form>
+                            </details>
+                          )}
+                      </>
+                    )}
+                    {["pending", "pending_confirmation", "paid", "refunded"].includes(
+                      s.status as string
+                    ) && (
+                      <a
+                        href={`/billing/${s.id as string}/pdf`}
+                        className="block text-blue-700 hover:underline"
+                      >
+                        {s.status === "paid" || s.status === "refunded"
+                          ? "Receipt (PDF)"
+                          : "Invoice (PDF)"}
+                      </a>
                     )}
                   </td>
                 </tr>

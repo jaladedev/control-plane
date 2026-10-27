@@ -156,3 +156,10 @@ and only then apply. It asks the worker to refresh the school's version afterwar
 | "A backup was uploaded (...) but could not be recorded"           | The control plane could not be reached right after the upload. The object is in R2 under the key shown; nothing was migrated. Retry takes a fresh backup.                                                                                               |
 | "pg_dump timed out after N minutes"                               | A large database. Raise `BACKUP_TIMEOUT_MINUTES`. The job's heartbeat keeps running meanwhile, so it is not requeued.                                                                                                                                   |
 | The worker will not start: "BACKUP_AGE_RECIPIENT ..."             | A backup setting is missing or wrong. `BACKUP_AGE_RECIPIENT` must be the **public** key (`age1...`), never the private one.                                                                                                                             |
+
+## Automatic suspension
+
+Once an hour the worker suspends active schools whose licence (grace included) ended more than
+`AUTO_SUSPEND_AFTER_DAYS` days ago (default 90; `0` turns it off; otherwise 7 to 365), unless the
+school has an open invoice or a waiting claim. See "Automatic suspension" in `docs/billing.md`.
+It needs no new credentials: it calls one database function, which writes the audit row.

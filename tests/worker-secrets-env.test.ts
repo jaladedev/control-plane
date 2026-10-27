@@ -66,8 +66,26 @@ describe("loadWorkerEnv", () => {
       BACKUP_PREFIX: "schools",
       BACKUP_KEEP: 10,
       BACKUP_TIMEOUT_MINUTES: 30,
+      AUTO_SUSPEND_AFTER_DAYS: 90,
     });
     expect(env.WORKER_ID.length).toBeGreaterThan(0);
+  });
+
+  it("takes 0 (off) or 7 to 365 days for automatic suspension, and nothing else", () => {
+    expect(loadWorkerEnv({ ...good, AUTO_SUSPEND_AFTER_DAYS: "0" }).AUTO_SUSPEND_AFTER_DAYS).toBe(
+      0
+    );
+    expect(loadWorkerEnv({ ...good, AUTO_SUSPEND_AFTER_DAYS: "7" }).AUTO_SUSPEND_AFTER_DAYS).toBe(
+      7
+    );
+    expect(loadWorkerEnv({ ...good, AUTO_SUSPEND_AFTER_DAYS: "365" }).AUTO_SUSPEND_AFTER_DAYS).toBe(
+      365
+    );
+    for (const bad of ["3", "6", "366", "-1", "soon", "30.5"]) {
+      expect(() => loadWorkerEnv({ ...good, AUTO_SUSPEND_AFTER_DAYS: bad })).toThrow(
+        /AUTO_SUSPEND_AFTER_DAYS/
+      );
+    }
   });
 
   it("lists every missing setting at once", () => {

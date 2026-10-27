@@ -135,6 +135,94 @@ describe("runWorker", () => {
     expect(polls).toBe(3);
   });
 
+  it("suspends lapsed schools once an hour, says so, and tells Telegram", async () => {
+    const controller = new AbortController();
+    let polls = 0;
+    const logs: string[] = [];
+    const send = vi.fn(async () => {});
+    const store = fakeStore({
+      claimJob: vi.fn(async () => {
+        if (++polls >= 4) controller.abort();
+        return null;
+      }),
+      suspendLapsedSchools: vi.fn(async () => [
+        { slug: "greenfield", graceUntil: "2026-06-30T23:59:59Z" },
+      ]),
+    });
+    await runWorker(workerDeps(store, { log: (m) => logs.push(m), telegram: { send } }), {
+      ...opts(controller.signal),
+      autoSuspendAfterDays: 90,
+    });
+    expect(store.suspendLapsedSchools).toHaveBeenCalledTimes(1);
+    expect(store.suspendLapsedSchools).toHaveBeenCalledWith(90);
+    expect(logs.some((l) => l.includes("suspended greenfield"))).toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect((send.mock.calls[0] as unknown as [string])[0]).toContain("greenfield");
+    expect((send.mock.calls[0] as unknown as [string])[0]).toContain("2026-06-30");
+  });
+
+  it("never suspends when the setting is off or absent", async () => {
+    for (const autoSuspendAfterDays of [null, undefined]) {
+      const controller = new AbortController();
+      let polls = 0;
+      const store = fakeStore({
+        claimJob: vi.fn(async () => {
+          if (++polls >= 2) controller.abort();
+          return null;
+        }),
+      });
+      await runWorker(workerDeps(store), { ...opts(controller.signal), autoSuspendAfterDays });
+      expect(store.suspendLapsedSchools).not.toHaveBeenCalled();
+    }
+  });
+
+  it("keeps the suspension and the loop going when the notice cannot be sent", async () => {
+    const controller = new AbortController();
+    let polls = 0;
+    const logs: string[] = [];
+    const store = fakeStore({
+      claimJob: vi.fn(async () => {
+        if (++polls >= 3) controller.abort();
+        return null;
+      }),
+      suspendLapsedSchools: vi.fn(async () => [{ slug: "a", graceUntil: "2026-01-01T00:00:00Z" }]),
+    });
+    await runWorker(
+      workerDeps(store, {
+        log: (m) => logs.push(m),
+        telegram: {
+          send: async () => {
+            throw new Error("Telegram answered 400");
+          },
+        },
+      }),
+      { ...opts(controller.signal), autoSuspendAfterDays: 30 }
+    );
+    expect(polls).toBe(3);
+    expect(logs.some((l) => l.includes("suspension notice failed"))).toBe(true);
+  });
+
+  it("logs and carries on when the suspension call itself fails", async () => {
+    const controller = new AbortController();
+    let polls = 0;
+    const logs: string[] = [];
+    const store = fakeStore({
+      claimJob: vi.fn(async () => {
+        if (++polls >= 3) controller.abort();
+        return null;
+      }),
+      suspendLapsedSchools: vi.fn(async () => {
+        throw new Error("rpc failed");
+      }),
+    });
+    await runWorker(workerDeps(store, { log: (m) => logs.push(m) }), {
+      ...opts(controller.signal),
+      autoSuspendAfterDays: 30,
+    });
+    expect(polls).toBe(3);
+    expect(logs.some((l) => l.includes("automatic suspension failed"))).toBe(true);
+  });
+
   it("does not poll at all when already stopped", async () => {
     const controller = new AbortController();
     controller.abort();

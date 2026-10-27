@@ -87,6 +87,73 @@ const LABELS: Record<string, string> = {
 export const itemLabel = (item: string) =>
   item.startsWith("feature:") ? `Add-on: ${item.slice(8)}` : (LABELS[item] ?? item);
 
+/** One priced line: the list price, any override for this session, and the total. */
+export function priceLine(
+  prices: PriceRow[],
+  overrides: OverrideRow[],
+  item: string,
+  session: string,
+  asOf: Date,
+  quantity: number,
+  label = itemLabel(item)
+): QuoteLine {
+  const list = priceAt(prices, item, asOf)!.amount_kobo ?? 0;
+  const o = overrideFor(overrides, item, session);
+  let unit = list;
+  let override: QuoteLine["override"] = null;
+  if (o) {
+    if (o.amount_kobo !== null) {
+      unit = o.amount_kobo;
+      override = { kind: "amount", value: o.amount_kobo, reason: o.reason };
+    } else if (o.percent_off !== null) {
+      unit = list - discountOf(list, o.percent_off);
+      override = { kind: "percent", value: o.percent_off, reason: o.reason };
+    }
+  }
+  return {
+    item,
+    label,
+    quantity,
+    list_unit_kobo: list,
+    unit_kobo: unit,
+    override,
+    total_kobo: unit * quantity,
+  };
+}
+
+/**
+ * The price of adding students to a session that is already paid: the extra-student
+ * price in force today, with the school's override for that session if it has one.
+ */
+export function buildTopupLine(input: {
+  session: string;
+  asOf: Date;
+  prices: PriceRow[];
+  overrides: OverrideRow[];
+  extraStudents: number;
+}): QuoteLine {
+  const n = input.extraStudents;
+  if (!Number.isInteger(n) || n < 1 || n > 100_000) {
+    throw new QuoteError("Extra students must be a whole number from 1 to 100,000.");
+  }
+  if (!priceAt(input.prices, "extra_student", input.asOf)) {
+    throw new QuoteError("No price is set for: Extra students. Set it on the Prices screen first.");
+  }
+  const line = priceLine(
+    input.prices,
+    input.overrides,
+    "extra_student",
+    input.session,
+    input.asOf,
+    n,
+    `Extra students (${n})`
+  );
+  if (!Number.isSafeInteger(line.total_kobo) || line.total_kobo > MAX_KOBO) {
+    throw new QuoteError("The total is too large; check the quantity.");
+  }
+  return line;
+}
+
 export function buildQuote(input: QuoteInput): Quote {
   const { session, asOf, prices, overrides } = input;
   if (!session.trim()) throw new QuoteError("Enter the academic session (for example 2026/2027).");
@@ -123,30 +190,8 @@ export function buildQuote(input: QuoteInput): Quote {
       ? input.schoolIncludedStudents
       : (priceAt(prices, "included_students", asOf)!.count ?? 0);
 
-  const line = (item: string, quantity: number, label = itemLabel(item)): QuoteLine => {
-    const list = priceAt(prices, item, asOf)!.amount_kobo ?? 0;
-    const o = overrideFor(overrides, item, session);
-    let unit = list;
-    let override: QuoteLine["override"] = null;
-    if (o) {
-      if (o.amount_kobo !== null) {
-        unit = o.amount_kobo;
-        override = { kind: "amount", value: o.amount_kobo, reason: o.reason };
-      } else if (o.percent_off !== null) {
-        unit = list - discountOf(list, o.percent_off);
-        override = { kind: "percent", value: o.percent_off, reason: o.reason };
-      }
-    }
-    return {
-      item,
-      label,
-      quantity,
-      list_unit_kobo: list,
-      unit_kobo: unit,
-      override,
-      total_kobo: unit * quantity,
-    };
-  };
+  const line = (item: string, quantity: number, label = itemLabel(item)): QuoteLine =>
+    priceLine(prices, overrides, item, session, asOf, quantity, label);
 
   const lines: QuoteLine[] = [line("base_fee", 1)];
   if (input.extraStudents > 0) {
