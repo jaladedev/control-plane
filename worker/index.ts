@@ -5,6 +5,7 @@ import { loadWorkerEnv } from "@/worker/env";
 import { ToolsBackupProvider } from "@/worker/backup";
 import { EnvSecrets } from "@/worker/secrets";
 import { fetchMigrationsAtCommit } from "@/lib/github-migrations";
+import { sendTelegram } from "@/lib/billing/telegram";
 import { SupabaseStore } from "@/worker/store";
 import { runWorker } from "@/worker/run";
 
@@ -67,6 +68,18 @@ async function main() {
         ? (sha) =>
             fetchMigrationsAtCommit({ repo: env.SCHOOL_APP_REPO, sha, token: env.GITHUB_TOKEN! })
         : undefined,
+      telegram:
+        env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID
+          ? {
+              send: (text) =>
+                sendTelegram({
+                  token: env.TELEGRAM_BOT_TOKEN!,
+                  chatId: env.TELEGRAM_CHAT_ID!,
+                  text,
+                }),
+              appUrl: env.APP_URL ?? null,
+            }
+          : undefined,
       log,
     },
     {

@@ -34,7 +34,13 @@ export async function middleware(request: NextRequest) {
 
   // A fully signed-in session for someone who is no longer an active dashboard
   // user (deactivated, or never one): end it.
-  if (signedIn && aal === "aal2" && path !== "/api/health" && path !== "/api/cron/health") {
+  if (
+    signedIn &&
+    aal === "aal2" &&
+    path !== "/api/health" &&
+    path !== "/api/cron/health" &&
+    path !== "/api/claims"
+  ) {
     const { data: role } = await supabase.rpc("dashboard_role");
     if (!role) {
       await supabase.auth.signOut();

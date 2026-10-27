@@ -2,7 +2,9 @@ import {
   handleRolloutStep,
   handleSchemaScan,
   type HandlerDeps,
+  handleLicensePush,
   handleRegisterRelease,
+  handleTelegramNotify,
   handleSchoolRollback,
   type HandlerResult,
 } from "@/worker/handlers";
@@ -14,7 +16,14 @@ import {
 
 export type WorkerDeps = HandlerDeps & { workerId: string; heartbeatMs?: number };
 
-export const JOB_TYPES = ["rollout_step", "schema_scan", "school_rollback", "register_release"];
+export const JOB_TYPES = [
+  "rollout_step",
+  "schema_scan",
+  "school_rollback",
+  "register_release",
+  "license_push",
+  "telegram_notify",
+];
 
 /** Processes at most one job. Returns false when the queue was empty. */
 export async function tick(deps: WorkerDeps): Promise<boolean> {
@@ -33,6 +42,8 @@ export async function tick(deps: WorkerDeps): Promise<boolean> {
     else if (job.type === "schema_scan") out = await handleSchemaScan(job, deps);
     else if (job.type === "school_rollback") out = await handleSchoolRollback(job, deps);
     else if (job.type === "register_release") out = await handleRegisterRelease(job, deps);
+    else if (job.type === "license_push") out = await handleLicensePush(job, deps);
+    else if (job.type === "telegram_notify") out = await handleTelegramNotify(job, deps);
     else out = { ok: false, error: `Unknown job type ${job.type}.` };
     await store.finishJob(job.id, workerId, out.ok, out.result ?? null, out.error ?? null);
     log(`job ${job.id} ${out.ok ? "succeeded" : `failed: ${out.error}`}`);
@@ -71,6 +82,7 @@ export type LoopOptions = {
 export async function runWorker(deps: WorkerDeps, opts: LoopOptions): Promise<void> {
   let lastStale = 0;
   let lastScan = 0;
+  let lastReminders = 0;
   // Housekeeping must never stand between the worker and its jobs: a failure
   // is logged and tried again next interval, and the loop carries on.
   const housekeeping = async (name: string, due: boolean, fn: () => Promise<void>) => {
@@ -93,6 +105,11 @@ export async function runWorker(deps: WorkerDeps, opts: LoopOptions): Promise<vo
         lastScan = now;
         const n = await deps.store.enqueueScans();
         if (n > 0) deps.log(`queued ${n} schema scan(s)`);
+      });
+      await housekeeping("claim reminders", now - lastReminders >= 10 * 60_000, async () => {
+        lastReminders = now;
+        const n = await deps.store.enqueueClaimReminders();
+        if (n > 0) deps.log(`queued ${n} claim reminder(s)`);
       });
       if (!(await tick(deps))) await sleep(opts.pollMs, opts.signal);
     } catch (error) {

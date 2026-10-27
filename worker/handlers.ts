@@ -9,6 +9,7 @@ import {
 import type { DeployCommand, DeployOutcome } from "@/lib/deploy/client";
 import type { ProbeResult } from "@/lib/health";
 import { planRegistration } from "@/lib/migrate/register";
+import { claimNotice } from "@/lib/billing/telegram";
 import type { Job, SchoolPatch, Store } from "@/worker/store";
 import type { SecretsProvider } from "@/worker/secrets";
 import { decideBackup, type BackupProvider } from "@/worker/backup";
@@ -33,6 +34,8 @@ export type HandlerDeps = {
   log: (message: string) => void;
   /** Reads a commit's migration files from GitHub. Absent when the worker has no GITHUB_TOKEN. */
   fetchMigrations?: (tag: string) => Promise<{ name: string; content: string }[]>;
+  /** Sends a Telegram message. Absent when the worker has no bot configured. */
+  telegram?: { send: (text: string) => Promise<void>; appUrl?: string | null };
 };
 
 // What the step's result says about the backup: taken (and where), skipped (and
@@ -389,4 +392,89 @@ export async function handleRegisterRelease(job: Job, deps: HandlerDeps): Promis
     throw error;
   }
   return { ok: true, result: { migrations: plan.newMigrations.map((m) => m.name) } };
+}
+
+// Pushes a school's licence (as saved on its registry row) into the school's own
+// database with set_license(), over the worker's direct connection, so the web app
+// never needs a service key for it. Safe to repeat: the school ignores a version it
+// already has, and a push that has already landed is skipped here. A failure is
+// recorded on the registry row and thrown, so the job is retried; the owner sees it.
+export async function handleLicensePush(job: Job, deps: HandlerDeps): Promise<HandlerResult> {
+  const { store, secrets } = deps;
+  if (!job.school_id) return { ok: false, error: "The job has no school." };
+  const lic = await store.licenseForPush(job.school_id);
+  if (!lic) return { ok: false, error: "That school does not exist." };
+  if (!lic.license_session || !lic.license_valid_until || !lic.license_grace_until) {
+    return { ok: false, error: `${lic.slug} has no licence saved to push.` };
+  }
+  if (lic.license_pushed_version >= lic.license_version) {
+    return { ok: true, result: { skipped: "already pushed", version: lic.license_version } };
+  }
+
+  let message = "";
+  try {
+    const conn = await deps.connect(await secrets.schoolDatabaseUrl(lic.slug));
+    try {
+      const res = await conn.db.query(
+        "select set_license($1::uuid, $2::bigint, $3::text, $4::timestamptz, $5::timestamptz, $6::integer, $7::text[], $8::boolean) as applied",
+        [
+          lic.id,
+          lic.license_version,
+          lic.license_session,
+          lic.license_valid_until,
+          lic.license_grace_until,
+          lic.included_students > 0 ? lic.included_students : null,
+          lic.features,
+          lic.license_is_trial,
+        ]
+      );
+      // false: the school already has this version or a newer one. Either way it is in step.
+      const applied = res.rows[0]?.applied === true;
+      await store.recordLicensePush(lic.id, lic.license_version, true, null);
+      return { ok: true, result: { version: lic.license_version, applied } };
+    } finally {
+      await conn.close().catch(() => {});
+    }
+  } catch (error) {
+    message = clip(secrets.redact(error instanceof Error ? error.message : String(error)));
+  }
+  await store.recordLicensePush(lic.id, lic.license_version, false, message).catch(() => {});
+  throw new Error(`Licence push for ${lic.slug} failed: ${message}`);
+}
+
+// Tells you on Telegram that a claim needs checking, once, and once more if it is
+// still waiting after 48 hours. Never blocks the claim: a failed send is retried
+// and, if it keeps failing, shows as a failed job while the claim stays in the queue.
+export async function handleTelegramNotify(job: Job, deps: HandlerDeps): Promise<HandlerResult> {
+  const { store } = deps;
+  const kind = job.payload.kind === "reminder" ? "reminder" : "claim";
+  const claimId = String(job.payload.claim_id ?? "");
+  if (!deps.telegram) {
+    return {
+      ok: false,
+      error: "Telegram is not set up on the worker (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID).",
+    };
+  }
+  const claim = await store.claimForNotice(claimId);
+  if (!claim) return { ok: false, error: "That claim does not exist." };
+  if (claim.status !== "pending")
+    return { ok: true, result: { skipped: `already ${claim.status}` } };
+  if ((kind === "claim" ? claim.notified_at : claim.reminded_at) !== null) {
+    return { ok: true, result: { skipped: "already sent" } };
+  }
+  const ageHours = (Date.now() - Date.parse(claim.created_at)) / 3_600_000;
+  await deps.telegram.send(
+    claimNotice({
+      kind,
+      schoolName: claim.school_name,
+      amountKobo: claim.amount_kobo,
+      reference: claim.reference,
+      session: claim.session,
+      sentOn: claim.sent_on,
+      ageHours,
+      appUrl: deps.telegram.appUrl,
+    })
+  );
+  await store.markClaimNotified(claim.id, kind);
+  return { ok: true, result: { sent: kind } };
 }

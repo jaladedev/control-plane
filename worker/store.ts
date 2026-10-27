@@ -15,6 +15,32 @@ export type Job = {
   max_attempts: number;
 };
 
+export type LicenseForPush = {
+  id: string;
+  slug: string;
+  license_version: number;
+  license_pushed_version: number;
+  license_session: string | null;
+  license_is_trial: boolean;
+  license_valid_until: string | null;
+  license_grace_until: string | null;
+  included_students: number;
+  features: string[];
+};
+
+export type ClaimForNotice = {
+  id: string;
+  status: string;
+  amount_kobo: number;
+  sent_on: string;
+  created_at: string;
+  notified_at: string | null;
+  reminded_at: string | null;
+  reference: string;
+  session: string;
+  school_name: string;
+};
+
 export type StepContext = {
   step: { id: string; rollout_id: string; school_id: string; attempt: number };
   rollout: {
@@ -55,6 +81,17 @@ export interface Store {
   retryJob(jobId: string, worker: string, error: string, delaySeconds: number): Promise<void>;
   requeueStale(minutes: number): Promise<number>;
   enqueueScans(): Promise<number>;
+
+  licenseForPush(schoolId: string): Promise<LicenseForPush | null>;
+  recordLicensePush(
+    schoolId: string,
+    version: number,
+    ok: boolean,
+    error: string | null
+  ): Promise<void>;
+  claimForNotice(claimId: string): Promise<ClaimForNotice | null>;
+  markClaimNotified(claimId: string, kind: "claim" | "reminder"): Promise<void>;
+  enqueueClaimReminders(): Promise<number>;
 
   loadStep(stepId: string): Promise<StepContext | null>;
   startStep(stepId: string): Promise<boolean>;
@@ -407,6 +444,55 @@ export class SupabaseStore implements Store {
         p_migrations: a.migrations,
       }),
       "register_release"
+    );
+  }
+
+  async licenseForPush(schoolId: string): Promise<LicenseForPush | null> {
+    const row = check(
+      await this.db
+        .from("schools")
+        .select(
+          "id, slug, license_version, license_pushed_version, license_session, license_is_trial, license_valid_until, license_grace_until, included_students, features"
+        )
+        .eq("id", schoolId)
+        .maybeSingle(),
+      "load licence"
+    );
+    return row ? { ...row, features: row.features ?? [] } : null;
+  }
+
+  async recordLicensePush(schoolId: string, version: number, ok: boolean, error: string | null) {
+    check(
+      await this.db.rpc("record_license_push", {
+        p_school: schoolId,
+        p_version: version,
+        p_ok: ok,
+        p_error: error,
+      }),
+      "record_license_push"
+    );
+  }
+
+  async claimForNotice(claimId: string): Promise<ClaimForNotice | null> {
+    const rows = need(
+      await this.db.rpc("claim_for_notice", { p_claim: claimId }),
+      "claim_for_notice"
+    );
+    const r = (Array.isArray(rows) ? rows[0] : rows) as
+      (Omit<ClaimForNotice, "amount_kobo"> & { amount_kobo: number | string }) | undefined;
+    return r ? { ...r, amount_kobo: Number(r.amount_kobo) } : null;
+  }
+
+  async markClaimNotified(claimId: string, kind: "claim" | "reminder") {
+    check(
+      await this.db.rpc("mark_claim_notified", { p_claim: claimId, p_kind: kind }),
+      "mark_claim_notified"
+    );
+  }
+
+  async enqueueClaimReminders(): Promise<number> {
+    return Number(
+      need(await this.db.rpc("enqueue_claim_reminders", {}), "enqueue_claim_reminders") ?? 0
     );
   }
 }

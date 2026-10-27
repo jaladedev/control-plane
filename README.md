@@ -195,6 +195,12 @@ CLI's) is the source of truth for what it has.
   (`docs/worker.md`, "Backups"). The owner may skip it, per rollout, only for schools whose
   pending migrations are all expand. Restoring is manual: `docs/backup-restore.md`.
 
+### Billing and transfer claims
+
+Owners and finance set prices, quote and invoice schools, and confirm the transfer
+claims schools send (signed with their own key), which updates the licence. The
+worker pushes the licence and announces claims on Telegram. See `docs/billing.md`.
+
 ### Scheduling the health run
 
 `.github/workflows/health.yml` calls the route every 10 minutes. Add repository

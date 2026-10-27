@@ -74,6 +74,11 @@ export function fakeStore(overrides: Partial<Store> = {}) {
     markBackupPruned: vi.fn(async () => {
       note("markBackupPruned");
     }),
+    licenseForPush: vi.fn(async () => null),
+    recordLicensePush: vi.fn(async () => {}),
+    claimForNotice: vi.fn(async () => null),
+    markClaimNotified: vi.fn(async () => {}),
+    enqueueClaimReminders: vi.fn(async () => 0),
     schoolForAction: vi.fn(async () => null),
     registryRows: vi.fn(async () => []),
     registerRelease: vi.fn(async () => {}),

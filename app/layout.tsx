@@ -28,6 +28,16 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               <Link href="/migrations" className="hover:underline">
                 Migrations
               </Link>
+              {(actor.role === "owner" || actor.role === "finance") && (
+                <>
+                  <Link href="/billing" className="hover:underline">
+                    Billing
+                  </Link>
+                  <Link href="/prices" className="hover:underline">
+                    Prices
+                  </Link>
+                </>
+              )}
               {actor.role === "owner" && (
                 <>
                   <Link href="/users" className="hover:underline">

@@ -105,6 +105,16 @@ Besides rollout steps and the periodic scan, the worker runs three owner-started
 
 All three show their outcome under **Recent actions** on the Migrations screen.
 
+Two more jobs come from billing (see `docs/billing.md`):
+
+- **License push**: after an invoice is paid or extended, pushes the school's licence into
+  its own database with `set_license()`. Retried on failure; the error shows on the
+  school's page; a version the school already has is ignored.
+- **Telegram notice**: announces a new transfer claim, and once more if it is still
+  waiting after 48 hours (the worker queues reminders every 10 minutes). Needs
+  `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`; without them the job fails visibly and the
+  claim still waits in the Billing queue.
+
 ## Adopting a school that already has its schema
 
 A school created before the runner existed has its tables but no migration history.

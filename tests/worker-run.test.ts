@@ -37,6 +37,8 @@ describe("tick", () => {
       "schema_scan",
       "school_rollback",
       "register_release",
+      "license_push",
+      "telegram_notify",
     ]);
   });
 

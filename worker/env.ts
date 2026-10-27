@@ -37,6 +37,12 @@ const schema = z.object({
     .string()
     .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, "must look like owner/name")
     .default("jaladedev/school_app"),
+  // Optional: the control plane's own Telegram bot, for new-claim notices and the
+  // 48-hour reminder. Without both, claim notices fail visibly (claims still queue).
+  TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
+  TELEGRAM_CHAT_ID: z.string().min(1).optional(),
+  // Where the dashboard lives, for the link in a notice.
+  APP_URL: z.string().url().optional(),
   WORKER_ID: z.string().min(1).default(`${hostname()}-${process.pid}`),
   POLL_MS: z.coerce.number().int().min(500).max(60_000).default(3000),
   STALE_MINUTES: z.coerce.number().int().min(5).max(240).default(45),

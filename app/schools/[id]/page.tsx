@@ -7,6 +7,7 @@ import type { HealthStatus } from "@/lib/health";
 import { SchoolForm } from "@/components/SchoolForm";
 import { LicenseForm } from "@/components/LicenseForm";
 import { SupportLink } from "@/components/SupportLink";
+import { SigningKeys } from "@/components/SigningKeys";
 import { HealthBadge, LicenseBadge, ago } from "@/components/badges";
 import { setStatusAction, updateSchoolAction } from "@/app/schools/actions";
 
@@ -17,6 +18,8 @@ const OK: Record<string, string> = {
   licensed: "Licence saved and delivered to the school.",
   pushed: "Licence delivered to the school.",
   revoked: "Licence revoked. The school is now read-only.",
+  key_added: "Claim key added.",
+  key_revoked: "Claim key revoked. The school can no longer sign claims with it.",
 };
 
 const fmt = (iso: string | null) => (iso ? iso.slice(0, 16).replace("T", " ") + " UTC" : "—");
@@ -54,6 +57,15 @@ export default async function SchoolPage({
   const isOwner = actor.role === "owner";
   const canLicense = isOwner || actor.role === "finance";
   const canSupport = (isOwner || actor.role === "support") && school.status !== "archived";
+  const keys = isOwner
+    ? ((
+        await supabase
+          .from("school_signing_keys")
+          .select("id, public_key, created_at, revoked_at")
+          .eq("school_id", school.id)
+          .order("created_at", { ascending: false })
+      ).data ?? [])
+    : [];
 
   return (
     <div className="space-y-8">
@@ -108,6 +120,13 @@ export default async function SchoolPage({
         <section className="space-y-3">
           <h2 className="font-semibold">Licence</h2>
           <LicenseForm school={school} isOwner={isOwner} />
+        </section>
+      )}
+
+      {isOwner && (
+        <section className="space-y-3">
+          <h2 className="font-semibold">Payment claim keys</h2>
+          <SigningKeys schoolId={school.id} keys={keys} />
         </section>
       )}
 

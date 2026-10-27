@@ -7,7 +7,8 @@ export type Aal = "aal1" | "aal2" | null;
 export type Decision = { action: "allow" } | { action: "redirect"; to: string };
 
 // /api/cron/health has no session; it checks its own bearer secret.
-const ALWAYS_PUBLIC = ["/api/health", "/api/cron/health"];
+// /api/claims is called by a school's server and checks the school's signature.
+const ALWAYS_PUBLIC = ["/api/health", "/api/cron/health", "/api/claims"];
 
 export function decideAccess(input: { path: string; signedIn: boolean; aal: Aal }): Decision {
   const { path, signedIn, aal } = input;

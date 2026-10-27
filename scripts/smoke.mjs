@@ -300,6 +300,9 @@ async function main() {
       "/schools/new",
       `/schools/${SCHOOL_ID}`,
       "/migrations",
+      "/billing",
+      "/billing/new",
+      "/prices",
     ]) {
       const res = await get(p);
       check(
@@ -309,6 +312,18 @@ async function main() {
       );
     }
     check("signed out: /login opens", (await get("/login")).status === 200);
+    const claim = await fetch(`${base}/api/claims`, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    });
+    const claimBody = await claim.json().catch(() => null);
+    check(
+      "signed out: POST /api/claims is reachable but rejects an unsigned request without a redirect",
+      claim.status === 401 && claimBody?.ok === false && claimBody?.error === "Request rejected.",
+      `${claim.status} ${JSON.stringify(claimBody)}`
+    );
 
     // Password only (aal1)
     state.userOk = true;
@@ -403,6 +418,39 @@ async function main() {
       })
     );
     check("owner: nav links to Migrations", homeHtml.includes('href="/migrations"'));
+    check(
+      "owner: nav links to Billing and Prices",
+      homeHtml.includes('href="/billing"') && homeHtml.includes('href="/prices"')
+    );
+    const bill = await get("/billing", aal2);
+    const billHtml = flat(await bill.text());
+    check(
+      "owner: /billing opens with the claims queue and invoices",
+      bill.status === 200 &&
+        billHtml.includes("Claims waiting") &&
+        billHtml.includes("New invoice"),
+      `${bill.status}`
+    );
+    const prices = await get("/prices", aal2);
+    const pricesHtml = flat(await prices.text());
+    check(
+      "owner: /prices opens and can set a price and an override",
+      prices.status === 200 &&
+        pricesHtml.includes("Set a price") &&
+        pricesHtml.includes("Give one school a different price"),
+      `${prices.status}`
+    );
+    const newInvoice = await get("/billing/new", aal2);
+    check("owner: /billing/new opens", newInvoice.status === 200, `${newInvoice.status}`);
+    state.withSchool = true;
+    const sch = await get(`/schools/${SCHOOL_ID}`, aal2);
+    const schHtml = flat(await sch.text());
+    state.withSchool = false;
+    check(
+      "owner: a school page offers claim keys",
+      sch.status === 200 && schHtml.includes("Payment claim keys"),
+      `${sch.status}`
+    );
     check(
       "owner: with no release, the screen says how to register one",
       migHtml.includes("No release is registered")
@@ -524,6 +572,47 @@ async function main() {
       );
       state.withRelease = false;
       state.withSchool = false;
+      if (role === "finance") {
+        const fb = await get("/billing", aal2);
+        const fbHtml = flat(await fb.text());
+        check(
+          "finance: /billing opens",
+          fb.status === 200 &&
+            fbHtml.includes("Claims waiting") &&
+            fbHtml.includes('href="/billing"'),
+          `${fb.status}`
+        );
+        const fp = flat(await (await get("/prices", aal2)).text());
+        check(
+          "finance: /prices is read-only (no price or override forms)",
+          fp.includes("In force now") &&
+            !fp.includes("Set a price") &&
+            !fp.includes("Give one school a different price")
+        );
+        state.withSchool = true;
+        const fsRes = await get(`/schools/${SCHOOL_ID}`, aal2);
+        const fs = flat(await fsRes.text());
+        state.withSchool = false;
+        check(
+          "finance: a school page opens but hides claim keys",
+          fsRes.status === 200 && fs.includes("Health") && !fs.includes("Payment claim keys"),
+          `${fsRes.status}`
+        );
+      } else {
+        for (const p of ["/billing", "/billing/new", "/prices"]) {
+          const res = await get(p, aal2);
+          check(
+            `${role}: ${p} sends them home`,
+            redirectsTo(res, "/"),
+            `${res.status} ${res.headers.get("location")}`
+          );
+        }
+        const home = flat(await (await get("/", aal2)).text());
+        check(
+          `${role}: nav has no Billing or Prices`,
+          !home.includes('href="/billing"') && !home.includes('href="/prices"')
+        );
+      }
       for (const p of ["/users", "/audit", "/schools/new"]) {
         const res = await get(p, aal2);
         check(
