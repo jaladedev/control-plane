@@ -14,8 +14,11 @@ import {
 // Keys travel as base64url of the raw 32 bytes. The signature covers a message
 // binding the school, the moment and the exact request body:
 //
-//   claim-v1 \n <school slug> \n <unix seconds> \n <sha256 hex of the body bytes>
+//   <purpose> \n <school slug> \n <unix seconds> \n <sha256 hex of the body bytes>
 //
+// The purpose is "claim-v1" for a payment claim, "proof-v1" for asking to upload a
+// proof of payment and "checkout-v1" for starting a card payment. It is part of
+// what is signed, so a request signed for one purpose is worthless for another.
 // A signed request is only accepted within CLAIM_MAX_SKEW_SECONDS of now, and a
 // replay inside that window is harmless because a claim is idempotent on its
 // client_ref. This file is kept identical to school_app's lib/controlPlaneClaim.ts
@@ -23,6 +26,9 @@ import {
 // literal signature in their tests.
 
 export const CLAIM_MAX_SKEW_SECONDS = 300;
+
+export const SIGNATURE_PURPOSES = ["claim-v1", "proof-v1", "checkout-v1"] as const;
+export type SignaturePurpose = (typeof SIGNATURE_PURPOSES)[number];
 
 const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 const PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
@@ -34,9 +40,12 @@ export function claimMessage(p: {
   slug: string;
   timestamp: number;
   body: string | Buffer;
+  purpose?: SignaturePurpose;
 }): string {
+  const purpose = p.purpose ?? "claim-v1";
+  if (!SIGNATURE_PURPOSES.includes(purpose)) throw new Error("Unknown signature purpose.");
   const digest = createHash("sha256").update(p.body).digest("hex");
-  return ["claim-v1", p.slug, String(p.timestamp), digest].join("\n");
+  return [purpose, p.slug, String(p.timestamp), digest].join("\n");
 }
 
 export function generateClaimKeyPair(): { privateKey: string; publicKey: string } {
@@ -51,6 +60,7 @@ export function signClaim(p: {
   slug: string;
   timestamp: number;
   body: string | Buffer;
+  purpose?: SignaturePurpose;
 }): string {
   if (!KEY_B64URL.test(p.privateKey)) throw new Error("The claim signing key is not valid.");
   const key = createPrivateKey({
@@ -68,6 +78,7 @@ export function verifyClaim(p: {
   timestamp: number;
   body: string | Buffer;
   signature: string;
+  purpose?: SignaturePurpose;
 }): boolean {
   let sig: Buffer;
   try {

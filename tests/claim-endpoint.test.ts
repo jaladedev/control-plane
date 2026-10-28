@@ -271,3 +271,33 @@ describe("rate limiting", () => {
     expect(deps.submit).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("proof_path", () => {
+  const UUID = "123e4567-e89b-42d3-a456-426614174000";
+  it("accepts a path made for this school", async () => {
+    const { deps, send } = setup();
+    const res = await send(body({ proof_path: `proofs/greenfield/${UUID}.jpg` }));
+    expect(res.status).toBe(201);
+    expect(deps.submit).toHaveBeenCalledWith(
+      "school-1",
+      expect.objectContaining({ proof_path: `proofs/greenfield/${UUID}.jpg` })
+    );
+  });
+
+  it("refuses another school's path, a made-up one, or a traversal, before anything is audited", async () => {
+    for (const proof_path of [
+      `proofs/othertown/${UUID}.jpg`,
+      "proofs/greenfield/a.jpg",
+      `proofs/greenfield/../othertown/${UUID}.jpg`,
+      `https://evil.example/${UUID}.jpg`,
+      "",
+    ]) {
+      const { deps, send } = setup();
+      const res = await send(body({ proof_path }));
+      expect(res.status, proof_path).toBe(400);
+      expect(res.body.error).toBe("proof_path: That is not a proof uploaded for this school.");
+      expect(deps.audit).not.toHaveBeenCalled();
+      expect(deps.submit).not.toHaveBeenCalled();
+    }
+  });
+});

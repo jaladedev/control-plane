@@ -88,3 +88,35 @@ describe("keys and freshness", () => {
     expect(timestampFresh(TS + 0.5, now)).toBe(false);
   });
 });
+
+describe("purposes", () => {
+  const PROOF_SIG =
+    "kSZ0ensSYC0nDd0T8v8qC8MvQZbt9LffYm3mI_Nj2qmiJn0PJud-qN0XxNuwX0Ydm9HyYNnSDv2MYxwmHkxDCg";
+  const CHECKOUT_SIG =
+    "chp09AkA3NLKR7OeTjM-Vyv4ZeB6s-11s7ktr_w8yoGP8_4qHyXpliZ5L0_tTlNLi7jlILuBOm8op7Eh5jpHDQ";
+  const base = { slug: "greenfield", timestamp: TS, body: BODY };
+
+  it("signs each purpose to its own agreed literal signature (also asserted in school_app)", () => {
+    expect(signClaim({ privateKey: SEED, ...base, purpose: "proof-v1" })).toBe(PROOF_SIG);
+    expect(signClaim({ privateKey: SEED, ...base, purpose: "checkout-v1" })).toBe(CHECKOUT_SIG);
+    expect(claimMessage({ ...base, purpose: "proof-v1" }).split("\n")[0]).toBe("proof-v1");
+  });
+  it("treats a missing purpose as a claim, so existing signatures keep working", () => {
+    expect(signClaim({ privateKey: SEED, ...base })).toBe(SIG);
+    expect(signClaim({ privateKey: SEED, ...base, purpose: "claim-v1" })).toBe(SIG);
+  });
+  it("accepts a signature only for the purpose it was made for", () => {
+    const v = (signature: string, purpose?: "claim-v1" | "proof-v1" | "checkout-v1") =>
+      verifyClaim({ publicKeys: [PUB], ...base, signature, purpose });
+    expect(v(PROOF_SIG, "proof-v1")).toBe(true);
+    expect(v(PROOF_SIG, "checkout-v1")).toBe(false);
+    expect(v(PROOF_SIG)).toBe(false);
+    expect(v(CHECKOUT_SIG, "checkout-v1")).toBe(true);
+    expect(v(CHECKOUT_SIG, "proof-v1")).toBe(false);
+    expect(v(SIG, "proof-v1")).toBe(false);
+    expect(v(SIG, "claim-v1")).toBe(true);
+  });
+  it("refuses a purpose it does not know", () => {
+    expect(() => claimMessage({ ...base, purpose: "other" as never })).toThrow(/purpose/);
+  });
+});

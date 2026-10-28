@@ -4,6 +4,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { Client } from "pg";
 import { generateClaimKeyPair, signClaim } from "@/lib/billing/claim-signature";
 import { handleClaim } from "@/lib/billing/claim-endpoint";
+import type { SchoolAuthDeps } from "@/lib/billing/school-request";
+import { handleCheckout } from "@/lib/paystack/checkout";
+import { paystackSignature } from "@/lib/paystack/signature";
+import { handlePaystackWebhook } from "@/lib/paystack/webhook";
 import { buildQuote, type OverrideRow, type PriceRow } from "@/lib/billing/quote";
 import type { DeployOutcome } from "@/lib/deploy/client";
 import { EnvSecrets } from "@/worker/secrets";
@@ -130,6 +134,29 @@ describe.skipIf(!ADMIN_URL)(
       return { id, qt, row: await sub(id) };
     };
 
+    // The lookups every signed school request makes, against this database.
+    const authDeps: SchoolAuthDeps = {
+      findSchool: async (slug) =>
+        (await q(cp, "select id, status from schools where slug = $1", [slug]))[0] ?? null,
+      publicKeys: async (id) =>
+        (
+          await q(
+            cp,
+            "select public_key from school_signing_keys where school_id = $1 and revoked_at is null",
+            [id]
+          )
+        ).map((r) => r.public_key),
+      rateLimit: async (bucket, windowSeconds, max) => {
+        const r = await rpc("rate_limit_hit", {
+          p_bucket: bucket,
+          p_window_seconds: windowSeconds,
+          p_max: max,
+        });
+        if (r.error) throw new Error(r.error.message);
+        return r.data === true;
+      },
+    };
+
     // A school posting a claim: the real endpoint logic, wired to this database.
     const post = async (
       body: Record<string, unknown>,
@@ -151,25 +178,7 @@ describe.skipIf(!ADMIN_URL)(
           ip: "203.0.113.7",
         },
         {
-          findSchool: async (slug) =>
-            (await q(cp, "select id, status from schools where slug = $1", [slug]))[0] ?? null,
-          publicKeys: async (id) =>
-            (
-              await q(
-                cp,
-                "select public_key from school_signing_keys where school_id = $1 and revoked_at is null",
-                [id]
-              )
-            ).map((r) => r.public_key),
-          rateLimit: async (bucket, windowSeconds, max) => {
-            const r = await rpc("rate_limit_hit", {
-              p_bucket: bucket,
-              p_window_seconds: windowSeconds,
-              p_max: max,
-            });
-            if (r.error) throw new Error(r.error.message);
-            return r.data === true;
-          },
+          ...authDeps,
           audit: async (action, id, details) =>
             void (await cp.query(
               "insert into audit_log (actor_email, role, action, school_id, details) values ('school:alpha','school',$1,$2,$3)",
@@ -668,6 +677,162 @@ describe.skipIf(!ADMIN_URL)(
       await call("mark_subscription_paid", { p_sub: id, p_ref: "", p_by: "f", p_reason: "paid" });
       expect((await one("select status from schools where id = $1", [schoolId])).status).toBe(
         "active"
+      );
+    });
+
+    // ------------------------------------------------------------- card payments
+    const PAYSTACK_SECRET = "sk_test_0123456789abcdef";
+    const checkout = async (reference: string, over: Record<string, unknown> = {}) => {
+      const raw = JSON.stringify({
+        subscription_reference: reference,
+        payer_email: "bursar@alpha.example",
+        return_url: "https://alpha.example/renewal",
+        ...over,
+      });
+      const ts = Math.floor(Date.now() / 1000);
+      let sent: { reference: string; amountKobo: number } | null = null;
+      const res = await handleCheckout(
+        {
+          slug: "alpha",
+          timestamp: String(ts),
+          signature: signClaim({
+            privateKey: keys.privateKey,
+            slug: "alpha",
+            timestamp: ts,
+            body: raw,
+            purpose: "checkout-v1",
+          }),
+          rawBody: raw,
+          ip: "203.0.113.7",
+        },
+        {
+          ...authDeps,
+          configured: true,
+          begin: async (schoolId, ref, email) => {
+            const r = await rpc("paystack_begin", {
+              p_school: schoolId,
+              p_reference: ref,
+              p_email: email,
+            });
+            if (r.error) return { businessError: r.error.message };
+            const row = (r.data as { reference: string; amount_kobo: string }[])[0];
+            return { reference: row.reference, amountKobo: Number(row.amount_kobo) };
+          },
+          initialize: async (p) => {
+            sent = { reference: p.reference, amountKobo: p.amountKobo };
+            return { authorizationUrl: "https://checkout.paystack.com/test" };
+          },
+          audit: async () => {},
+        }
+      );
+      return { res, sent: sent as { reference: string; amountKobo: number } | null };
+    };
+    const webhook = async (
+      reference: string,
+      amount: number,
+      id = 4099260516,
+      currency = "NGN"
+    ) => {
+      const raw = JSON.stringify({
+        event: "charge.success",
+        data: { id, reference, amount, currency, status: "success" },
+      });
+      return handlePaystackWebhook(
+        { rawBody: raw, signature: paystackSignature(raw, PAYSTACK_SECRET) },
+        {
+          secret: PAYSTACK_SECRET,
+          recordCharge: async (c) => {
+            const r = await rpc("paystack_record_charge", {
+              p_reference: c.reference,
+              p_paystack_id: c.paystackId,
+              p_paid_kobo: c.amountKobo,
+              p_currency: c.currency,
+            });
+            if (r.error) throw new Error(r.error.message);
+            return r.data as "applied" | "duplicate" | "needs_review" | "unknown";
+          },
+          audit: async () => {},
+        }
+      );
+    };
+
+    it("takes a card payment from checkout to a licence in the school's own database", async () => {
+      const { id, row, qt } = await invoice(0);
+      const { res, sent } = await checkout(row.reference as string);
+      expect(res.status).toBe(201);
+      expect(sent).toMatchObject({ amountKobo: qt.total_kobo });
+      const ref = (res.body as { reference: string }).reference;
+      expect(ref).toMatch(/^PSK-[0-9A-F]{16}$/);
+      // Not paid until Paystack says so.
+      expect((await sub(id)).status).toBe("pending");
+
+      expect((await webhook(ref, qt.total_kobo)).body).toEqual({ ok: true, result: "applied" });
+      expect(await sub(id)).toMatchObject({ status: "paid", method: "paystack", payment_ref: ref });
+      await drain();
+      const lic = (await q(school, "select version, valid_until from school_license"))[0];
+      expect(lic.version).toBe("1");
+      expect(new Date(lic.valid_until).getTime()).toBeGreaterThan(Date.now());
+
+      // Paystack resends the same webhook: nothing changes.
+      expect((await webhook(ref, qt.total_kobo)).body).toEqual({ ok: true, result: "duplicate" });
+      expect(await q(cp, "select 1 from jobs where type = 'license_push'")).toHaveLength(1);
+    });
+
+    it("flags a short card payment for a person, leaves the invoice open and queues a notice", async () => {
+      const { id, row, qt } = await invoice(0);
+      const ref = ((await checkout(row.reference as string)).res.body as { reference: string })
+        .reference;
+      expect((await webhook(ref, qt.total_kobo - 100)).body).toEqual({
+        ok: true,
+        result: "needs_review",
+      });
+      expect((await sub(id)).status).toBe("pending");
+      const n = await q(
+        cp,
+        "select payload from jobs where type = 'telegram_notify' and payload ->> 'kind' = 'paystack_review'"
+      );
+      expect(n).toHaveLength(1);
+      expect(n[0].payload.message).toContain(row.reference);
+      expect(await q(cp, "select 1 from jobs where type = 'license_push'")).toHaveLength(0);
+    });
+
+    it("will not start a checkout for an invoice that is paid or has a claim waiting", async () => {
+      const { id, row } = await invoice(0);
+      await post(claimBody(row.reference as string, Number(row.amount_kobo)));
+      expect((await checkout(row.reference as string)).res).toMatchObject({
+        status: 409,
+        body: { error: expect.stringContaining("already waiting to be confirmed") },
+      });
+      await call("reject_claim", {
+        p_claim: (await one("select id from payment_claims")).id,
+        p_by: "f",
+        p_reason: "x",
+      });
+      await call("mark_subscription_paid", { p_sub: id, p_ref: "", p_by: "f", p_reason: "paid" });
+      expect((await checkout(row.reference as string)).res).toMatchObject({
+        status: 409,
+        body: { error: "That invoice has already been paid." },
+      });
+    });
+
+    it("accepts a claim that names a proof this school was given, and refuses another school's", async () => {
+      const { row } = await invoice(0);
+      const UUID = "123e4567-e89b-42d3-a456-426614174000";
+      const bad = await post(
+        claimBody(row.reference as string, Number(row.amount_kobo), {
+          proof_path: `proofs/othertown/${UUID}.jpg`,
+        })
+      );
+      expect(bad.status).toBe(400);
+      expect(await q(cp, "select 1 from payment_claims")).toHaveLength(0);
+      const ok = await post(
+        claimBody(row.reference as string, Number(row.amount_kobo), {
+          proof_path: `proofs/alpha/${UUID}.jpg`,
+        })
+      );
+      expect(ok.status).toBe(201);
+      expect((await one("select proof_path from payment_claims")).proof_path).toBe(
+        `proofs/alpha/${UUID}.jpg`
       );
     });
   }

@@ -31,12 +31,14 @@ import {
   createTopup,
   markTopupPaid,
   refundInvoice,
+  resolvePaystackReview,
 } from "@/lib/actions/billing";
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 const SCHOOL = uuid(10);
 const SUB = uuid(20);
 const TOPUP = uuid(50);
+const PAYMENT = uuid(60);
 const owner = { id: uuid(1), email: "owner@example.com", role: "owner" };
 const finance = { id: uuid(2), email: "finance@example.com", role: "finance" };
 const price = (item: string, amount: number | null, count: number | null = null) => ({
@@ -69,6 +71,14 @@ beforeEach(() => {
       { id: SUB, school_id: SCHOOL, reference: "SUB-0A1B2C3D", session: "2026/2027" },
     ],
     subscription_topups: [{ id: TOPUP, school_id: SCHOOL, reference: "TOP-0A1B2C3D" }],
+    paystack_payments: [
+      {
+        id: PAYMENT,
+        school_id: SCHOOL,
+        reference: "PSK-0123456789ABCDEF",
+        paid_amount_kobo: 14_999_999,
+      },
+    ],
   };
 });
 
@@ -235,5 +245,39 @@ describe("refundInvoice", () => {
       },
     });
     await expect(refundInvoice(SUB, "late", "REFUND")).rejects.toThrow("outside the refund window");
+  });
+});
+
+describe("resolvePaystackReview", () => {
+  it("records what was done, audited first, with who did it", async () => {
+    await resolvePaystackReview(PAYMENT, "  refunded in the Paystack dashboard ");
+    expect(order).toEqual(["audit", "rpc:resolve_paystack_review"]);
+    expect(mocks.rpc).toHaveBeenCalledWith("resolve_paystack_review", {
+      p_id: PAYMENT,
+      p_by: "finance@example.com",
+      p_resolution: "refunded in the Paystack dashboard",
+    });
+    expect(audited[0]).toMatchObject({
+      action: "paystack.resolve_review",
+      schoolId: SCHOOL,
+      details: {
+        reference: "PSK-0123456789ABCDEF",
+        paid_amount_kobo: 14_999_999,
+        resolution: "refunded in the Paystack dashboard",
+      },
+    });
+  });
+
+  it("refuses an empty note or an unknown payment before anything is audited", async () => {
+    await expect(resolvePaystackReview(PAYMENT, "  ")).rejects.toThrow(
+      "Say what you did about it."
+    );
+    await expect(resolvePaystackReview(PAYMENT, undefined)).rejects.toThrow();
+    await expect(resolvePaystackReview(uuid(98), "done")).rejects.toThrow(
+      "That card payment does not exist."
+    );
+    await expect(resolvePaystackReview("nope", "done")).rejects.toThrow();
+    expect(audited).toEqual([]);
+    expect(mocks.rpc).not.toHaveBeenCalled();
   });
 });

@@ -1,13 +1,19 @@
 import { z } from "zod";
-import { timestampFresh, verifyClaim } from "@/lib/billing/claim-signature";
+import {
+  MAX_BODY_BYTES,
+  authenticateSchoolRequest,
+  parseBody,
+  type RequestResult,
+  type SchoolAuthDeps,
+  type SchoolRequest,
+} from "@/lib/billing/school-request";
+import { isProofPathFor } from "@/lib/storage/proofs";
 
 // The decision logic of POST /api/claims, separate from Next.js so every branch
-// can be tested. Order matters: nothing is looked up, and nothing is revealed,
-// until the request proves itself. Every authentication failure gets the SAME
-// answer, so a caller cannot tell a wrong school, a wrong key, a stale timestamp
-// and a missing key apart.
+// can be tested. The checks every signed school request shares (size, limits,
+// signature, archived) live in school-request.ts; this adds the claim itself.
 
-export const MAX_BODY_BYTES = 8 * 1024;
+export { MAX_BODY_BYTES };
 
 // Two fixed-window limits. The first runs before anything is looked up, per client
 // address, so a flood of junk costs one counter update and nothing else; the
@@ -36,13 +42,9 @@ export const claimBodySchema = z
 
 export type ClaimBody = z.infer<typeof claimBodySchema>;
 
-export type ClaimDeps = {
-  findSchool(slug: string): Promise<{ id: string; status: string } | null>;
-  publicKeys(schoolId: string): Promise<string[]>;
+export type ClaimDeps = SchoolAuthDeps & {
   /** Writes the audit row first; throws if it cannot. */
   audit(action: string, schoolId: string, details: Record<string, unknown>): Promise<void>;
-  /** Counts one hit on a bucket; false means over the limit. */
-  rateLimit(bucket: string, windowSeconds: number, max: number): Promise<boolean>;
   /** Calls submit_claim. `businessError` is a message the school may be shown. */
   submit(
     schoolId: string,
@@ -50,92 +52,34 @@ export type ClaimDeps = {
   ): Promise<{ claimId: string } | { businessError: string }>;
 };
 
-export type ClaimResult = {
-  status: number;
-  body: Record<string, unknown>;
-  headers?: Record<string, string>;
-};
-
-const tooMany = (windowSeconds: number): ClaimResult => ({
-  status: 429,
-  body: { ok: false, error: "Too many requests. Wait a little and try again." },
-  headers: { "retry-after": String(windowSeconds) },
-});
-
-// A broken limiter must not stop a school from paying, so it fails open: the
-// signature, not the limit, is what keeps strangers out.
-async function withinLimit(
-  deps: ClaimDeps,
-  bucket: string,
-  limit: { windowSeconds: number; max: number }
-): Promise<boolean> {
-  try {
-    return await deps.rateLimit(bucket, limit.windowSeconds, limit.max);
-  } catch {
-    return true;
-  }
-}
-
-const REJECTED: ClaimResult = { status: 401, body: { ok: false, error: "Request rejected." } };
+export type ClaimResult = RequestResult;
 
 export async function handleClaim(
-  req: {
-    slug: string | null;
-    timestamp: string | null;
-    signature: string | null;
-    rawBody: string;
-    /** The caller's address as the proxy reported it, or null. */
-    ip?: string | null;
-  },
+  req: SchoolRequest,
   deps: ClaimDeps,
   now: Date = new Date()
 ): Promise<ClaimResult> {
-  if (Buffer.byteLength(req.rawBody) > MAX_BODY_BYTES) {
-    return { status: 413, body: { ok: false, error: "The request is too large." } };
-  }
-  const address = (req.ip ?? "").trim().slice(0, 64) || "unknown";
-  if (!(await withinLimit(deps, `claim:ip:${address}`, CLAIM_LIMITS.perAddress))) {
-    return tooMany(CLAIM_LIMITS.perAddress.windowSeconds);
-  }
-  const slug = req.slug ?? "";
-  const timestamp =
-    req.timestamp !== null && /^\d{1,12}$/.test(req.timestamp) ? Number(req.timestamp) : NaN;
-  if (
-    !/^[a-z0-9][a-z0-9-]{0,40}$/.test(slug) ||
-    !req.signature ||
-    !timestampFresh(timestamp, now)
-  ) {
-    return REJECTED;
-  }
+  const auth = await authenticateSchoolRequest(
+    req,
+    deps,
+    { purpose: "claim-v1", bucket: "claim", ...CLAIM_LIMITS },
+    now
+  );
+  if (!auth.ok) return auth.result;
+  const school = auth.school;
 
-  const school = await deps.findSchool(slug);
-  if (!school) return REJECTED;
-  const keys = await deps.publicKeys(school.id);
-  if (keys.length === 0) return REJECTED;
-  if (
-    !verifyClaim({ publicKeys: keys, slug, timestamp, body: req.rawBody, signature: req.signature })
-  ) {
-    return REJECTED;
-  }
+  const parsed = parseBody(req.rawBody, claimBodySchema);
+  if (!parsed.ok) return parsed.result;
 
-  // Authenticated from here on, so specific answers are fine.
-  if (!(await withinLimit(deps, `claim:school:${school.id}`, CLAIM_LIMITS.perSchool))) {
-    return tooMany(CLAIM_LIMITS.perSchool.windowSeconds);
-  }
-  if (school.status === "archived") {
-    return { status: 403, body: { ok: false, error: "This school is archived." } };
-  }
-  let json: unknown;
-  try {
-    json = JSON.parse(req.rawBody);
-  } catch {
-    return { status: 400, body: { ok: false, error: "The body is not valid JSON." } };
-  }
-  const parsed = claimBodySchema.safeParse(json);
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    const where = issue.path.length ? `${issue.path.join(".")}: ` : "";
-    return { status: 400, body: { ok: false, error: `${where}${issue.message}` } };
+  // A proof must be one this school was given a link for; the database checks again.
+  if (
+    parsed.data.proof_path !== undefined &&
+    !isProofPathFor(parsed.data.proof_path, school.slug)
+  ) {
+    return {
+      status: 400,
+      body: { ok: false, error: "proof_path: That is not a proof uploaded for this school." },
+    };
   }
 
   await deps.audit("claim.submit", school.id, {

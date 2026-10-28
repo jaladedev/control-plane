@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { writeAudit } from "@/lib/audit";
+import { schoolAuthDeps } from "@/lib/auth/school-auth-deps";
 import { handleClaim } from "@/lib/billing/claim-endpoint";
 
 // A school posts "I have sent the transfer" here, signed with its own Ed25519 key
@@ -25,32 +26,7 @@ export async function POST(request: NextRequest) {
         ip: request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? null,
       },
       {
-        findSchool: async (s) => {
-          const { data } = await admin
-            .from("schools")
-            .select("id, status")
-            .eq("slug", s)
-            .maybeSingle();
-          return data ? { id: data.id as string, status: data.status as string } : null;
-        },
-        publicKeys: async (schoolId) => {
-          const { data } = await admin
-            .from("school_signing_keys")
-            .select("public_key")
-            .eq("school_id", schoolId)
-            .is("revoked_at", null);
-          return (data ?? []).map((k) => k.public_key as string);
-        },
-        rateLimit: async (bucket, windowSeconds, max) => {
-          const { data, error } = await admin.rpc("rate_limit_hit", {
-            p_bucket: bucket,
-            p_window_seconds: windowSeconds,
-            p_max: max,
-          });
-          if (error) throw new Error(error.message);
-          // Only an explicit "no" blocks; anything unexpected lets the school through.
-          return data !== false;
-        },
+        ...schoolAuthDeps(admin),
         audit: (action, schoolId, details) =>
           writeAudit({ email: `school:${slug}`, role: "school" }, { action, schoolId, details }),
         submit: async (schoolId, b) => {

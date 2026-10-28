@@ -176,6 +176,55 @@ const notifyJob = (kind = "claim") =>
   job({ type: "telegram_notify", school_id: "school-1", payload: { kind, claim_id: "claim-1" } });
 
 describe("handleTelegramNotify", () => {
+  it("sends a card payment review notice as the database wrote it, looking nothing up", async () => {
+    const { store, deps, send } = notifySetup(null);
+    const j = job({
+      type: "telegram_notify",
+      school_id: "school-1",
+      payload: { kind: "paystack_review", message: "Card payment needs review: Greenfield" },
+    });
+    expect(await handleTelegramNotify(j, deps)).toEqual({
+      ok: true,
+      result: { sent: "paystack_review" },
+    });
+    expect(send).toHaveBeenCalledWith("Card payment needs review: Greenfield");
+    expect(store.claimForNotice).not.toHaveBeenCalled();
+    expect(store.markClaimNotified).not.toHaveBeenCalled();
+  });
+
+  it("fails a review notice with no message, and one when Telegram is not set up", async () => {
+    const { deps } = notifySetup(null);
+    const bare = job({
+      type: "telegram_notify",
+      school_id: "school-1",
+      payload: { kind: "paystack_review" },
+    });
+    expect(await handleTelegramNotify(bare, deps)).toEqual({
+      ok: false,
+      error: "The review notice has no message.",
+    });
+    const off = notifySetup(null, undefined, false);
+    const withMsg = job({
+      type: "telegram_notify",
+      school_id: "school-1",
+      payload: { kind: "paystack_review", message: "x" },
+    });
+    expect((await handleTelegramNotify(withMsg, off.deps)).ok).toBe(false);
+  });
+
+  it("cuts a very long review notice to 1000 characters", async () => {
+    const { deps, send } = notifySetup(null);
+    await handleTelegramNotify(
+      job({
+        type: "telegram_notify",
+        school_id: "school-1",
+        payload: { kind: "paystack_review", message: "x".repeat(5000) },
+      }),
+      deps
+    );
+    expect((send.mock.calls[0] as unknown as [string])[0]).toHaveLength(1000);
+  });
+
   it("sends the notice for a new claim, then stamps it", async () => {
     const { store, deps, send } = notifySetup(claim());
     expect(await handleTelegramNotify(notifyJob(), deps)).toEqual({

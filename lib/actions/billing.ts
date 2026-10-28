@@ -422,6 +422,46 @@ export async function refundInvoice(
 }
 
 // ---------------------------------------------------------------------------
+// Card payments that needed a person
+// ---------------------------------------------------------------------------
+
+/**
+ * A card payment arrived that could not be applied (wrong amount, or the invoice was
+ * no longer open). A person looked at it and dealt with it, for example by refunding
+ * it from the Paystack dashboard. This records who and what; it moves no money.
+ */
+export async function resolvePaystackReview(paymentId: string, resolution: unknown): Promise<void> {
+  const actor = await requireActor(BILLING);
+  const id = z.string().uuid().parse(paymentId);
+  const what = z.string().trim().min(1, "Say what you did about it.").max(500).parse(resolution);
+  const admin = createAdminClient();
+  const { data } = await admin
+    .from("paystack_payments")
+    .select("school_id, reference, paid_amount_kobo")
+    .eq("id", id)
+    .maybeSingle();
+  if (!data) throw new Error("That card payment does not exist.");
+  await withAudit(
+    actor,
+    {
+      action: "paystack.resolve_review",
+      schoolId: data.school_id as string,
+      details: {
+        reference: data.reference,
+        paid_amount_kobo: data.paid_amount_kobo,
+        resolution: what,
+      },
+    },
+    () =>
+      rpc(admin, "resolve_paystack_review", {
+        p_id: id,
+        p_by: actor.email,
+        p_resolution: what,
+      })
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Claims
 // ---------------------------------------------------------------------------
 

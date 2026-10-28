@@ -324,6 +324,44 @@ async function main() {
       claim.status === 401 && claimBody?.ok === false && claimBody?.error === "Request rejected.",
       `${claim.status} ${JSON.stringify(claimBody)}`
     );
+    for (const path of ["/api/claims/proof", "/api/paystack/checkout"]) {
+      const res = await fetch(`${base}${path}`, {
+        method: "POST",
+        redirect: "manual",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      const json = await res.json().catch(() => null);
+      check(
+        `signed out: POST ${path} is reachable but rejects an unsigned request without a redirect`,
+        res.status === 401 && json?.error === "Request rejected.",
+        `${res.status} ${JSON.stringify(json)}`
+      );
+    }
+    const hook = await fetch(`${base}/api/paystack/webhook`, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/json", "x-paystack-signature": "0".repeat(128) },
+      body: "{}",
+    });
+    check(
+      "signed out: POST /api/paystack/webhook is reachable without a redirect and refuses a bad signature (or says card payments are not set up)",
+      hook.status === 401 || hook.status === 503,
+      String(hook.status)
+    );
+    for (const path of [
+      "/billing/00000000-0000-4000-8000-000000000001/pdf",
+      "/billing/proof/00000000-0000-4000-8000-000000000001",
+    ]) {
+      const res = await fetch(`${base}${path}`, { redirect: "manual" });
+      check(
+        `signed out: ${path} goes to /login`,
+        res.status >= 300 &&
+          res.status < 400 &&
+          (res.headers.get("location") ?? "").includes("/login"),
+        `${res.status} ${res.headers.get("location")}`
+      );
+    }
 
     // Password only (aal1)
     state.userOk = true;

@@ -7,13 +7,25 @@ export type Aal = "aal1" | "aal2" | null;
 export type Decision = { action: "allow" } | { action: "redirect"; to: string };
 
 // /api/cron/health has no session; it checks its own bearer secret.
-// /api/claims is called by a school's server and checks the school's signature.
-const ALWAYS_PUBLIC = ["/api/health", "/api/cron/health", "/api/claims"];
+// /api/claims, /api/claims/proof and /api/paystack/checkout are called by a school's
+// server and check the school's signature. /api/paystack/webhook is called by
+// Paystack and checks Paystack's signature.
+const ALWAYS_PUBLIC = [
+  "/api/health",
+  "/api/cron/health",
+  "/api/claims",
+  "/api/claims/proof",
+  "/api/paystack/checkout",
+  "/api/paystack/webhook",
+];
+
+/** Paths that carry their own proof of who is calling and need no dashboard session. */
+export const isPublicPath = (path: string) => ALWAYS_PUBLIC.includes(path);
 
 export function decideAccess(input: { path: string; signedIn: boolean; aal: Aal }): Decision {
   const { path, signedIn, aal } = input;
 
-  if (ALWAYS_PUBLIC.includes(path)) return { action: "allow" };
+  if (isPublicPath(path)) return { action: "allow" };
 
   if (!signedIn) {
     return path === "/login" ? { action: "allow" } : { action: "redirect", to: "/login" };

@@ -455,6 +455,15 @@ export async function handleTelegramNotify(job: Job, deps: HandlerDeps): Promise
       error: "Telegram is not set up on the worker (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID).",
     };
   }
+  // A card payment that could not be applied. The database wrote the message, so there
+  // is nothing to look up; it goes out as it is.
+  if (job.payload.kind === "paystack_review") {
+    const message =
+      typeof job.payload.message === "string" ? job.payload.message.slice(0, 1000) : "";
+    if (!message) return { ok: false, error: "The review notice has no message." };
+    await deps.telegram.send(message);
+    return { ok: true, result: { sent: "paystack_review" } };
+  }
   const claim = await store.claimForNotice(claimId);
   if (!claim) return { ok: false, error: "That claim does not exist." };
   if (claim.status !== "pending")

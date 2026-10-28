@@ -15,6 +15,7 @@ import {
   markTopupPaid,
   refundInvoice,
   rejectClaim,
+  resolvePaystackReview,
   revokeSigningKey,
   setPrice,
   setPriceOverride,
@@ -154,4 +155,11 @@ export const refundInvoiceAction = async (f: FormData) =>
     "/billing",
     () => refundInvoice(text(f, "subscriptionId"), f.get("reason"), f.get("confirm")),
     "refunded"
+  );
+
+export const resolvePaystackReviewAction = async (f: FormData) =>
+  respond(
+    "/billing",
+    () => resolvePaystackReview(text(f, "paymentId"), f.get("resolution")),
+    "paystack_resolved"
   );

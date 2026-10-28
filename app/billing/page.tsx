@@ -12,6 +12,7 @@ import {
   markPaidAction,
   markTopupPaidAction,
   refundInvoiceAction,
+  resolvePaystackReviewAction,
   rejectClaimAction,
 } from "./actions";
 
@@ -32,6 +33,7 @@ const OK: Record<string, string> = {
   topup_created: "Top-up invoiced. Nothing changes for the school until you mark it paid.",
   topup_cancelled: "Top-up cancelled.",
   topup_paid: "Top-up paid. The school's student allowance is being raised.",
+  paystack_resolved: "Card payment marked as dealt with.",
   refunded:
     "Refund recorded and the licence ended. Now send the money back from your bank; this screen does not move money.",
 };
@@ -60,7 +62,7 @@ export default async function BillingPage({
   const { ok, error } = await searchParams;
   const supabase = await createClient();
 
-  const [claimsRes, subsRes, schoolsRes, decidedRes, topupsRes] = await Promise.all([
+  const [claimsRes, subsRes, schoolsRes, decidedRes, topupsRes, reviewsRes] = await Promise.all([
     supabase
       .from("payment_claims")
       .select(
@@ -88,6 +90,13 @@ export default async function BillingPage({
       .select("id, school_id, subscription_id, reference, extra_students, amount_kobo, created_at")
       .eq("status", "pending")
       .order("created_at", { ascending: true }),
+    supabase
+      .from("paystack_payments")
+      .select(
+        "id, school_id, subscription_id, reference, amount_kobo, paid_amount_kobo, paid_at, note"
+      )
+      .eq("status", "needs_review")
+      .order("paid_at", { ascending: true }),
   ]);
 
   const schools = new Map((schoolsRes.data ?? []).map((s) => [s.id as string, s]));
@@ -97,6 +106,7 @@ export default async function BillingPage({
   const claims = claimsRes.data ?? [];
   const decided = decidedRes.data ?? [];
   const topups = topupsRes.data ?? [];
+  const reviews = reviewsRes.data ?? [];
 
   return (
     <div className="space-y-8">
@@ -142,7 +152,21 @@ export default async function BillingPage({
                 Sent on {c.sent_on as string} by {c.sender_name as string}
                 {c.payer_reference ? ` · bank reference ${c.payer_reference as string}` : ""} ·
                 claimed by {c.claimed_by as string}
-                {c.proof_path ? ` · proof: ${c.proof_path as string}` : ""}
+                {c.proof_path ? (
+                  <>
+                    {" · "}
+                    <a
+                      href={`/billing/proof/${c.id as string}`}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="text-blue-700 hover:underline"
+                    >
+                      View proof
+                    </a>
+                  </>
+                ) : (
+                  " · no proof attached"
+                )}
               </div>
               <div className="flex flex-wrap gap-6">
                 <form action={confirmClaimAction} className="flex flex-wrap items-end gap-2">
@@ -184,6 +208,47 @@ export default async function BillingPage({
           );
         })}
       </section>
+
+      {reviews.length > 0 && (
+        <section className="space-y-3">
+          <h2 className="font-semibold text-red-800">
+            Card payments needing review ({reviews.length})
+          </h2>
+          <p className="text-sm text-slate-600">
+            Money reached Paystack that could not be matched to an open invoice for the right
+            amount, so nothing was changed for the school. Decide what to do (usually refund it from
+            the Paystack dashboard, or pay the right invoice), then record what you did.
+          </p>
+          {reviews.map((r) => (
+            <div
+              key={r.id as string}
+              className="space-y-2 rounded border border-red-200 bg-red-50 p-4 text-sm"
+            >
+              <div className="flex flex-wrap gap-x-6 gap-y-1">
+                <span className="font-medium">{nameOf(r.school_id as string)}</span>
+                <span className="font-mono text-xs">{r.reference as string}</span>
+                <span>
+                  received {formatNaira(Number(r.paid_amount_kobo ?? 0))}, invoiced{" "}
+                  {formatNaira(Number(r.amount_kobo))}
+                </span>
+                <span className="text-slate-500">{ago(r.paid_at as string)}</span>
+              </div>
+              <p>{r.note as string}</p>
+              <form action={resolvePaystackReviewAction} className="flex flex-wrap items-end gap-2">
+                <input type="hidden" name="paymentId" value={r.id as string} />
+                <input
+                  name="resolution"
+                  placeholder="What you did (for example: refunded in Paystack)"
+                  className={`${field} w-96`}
+                />
+                <button className="rounded bg-slate-900 px-3 py-1.5 text-white">
+                  Mark dealt with
+                </button>
+              </form>
+            </div>
+          ))}
+        </section>
+      )}
 
       {topups.length > 0 && (
         <section className="space-y-3">

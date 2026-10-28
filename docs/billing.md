@@ -83,7 +83,7 @@ x-claim-signature:   <base64url Ed25519 signature>
   "claimed_by": "bursar@school.example" }
 ```
 
-The signature covers `claim-v1`, the school slug, the timestamp and the SHA-256 of the exact
+The signature covers the purpose (`claim-v1` here), the school slug, the timestamp and the SHA-256 of the exact
 body bytes (see `lib/billing/claim-signature.ts`; school_app has an identical
 `lib/controlPlaneClaim.ts`, and both repos assert the same literal signature).
 
@@ -175,12 +175,68 @@ the heading is left out. The PDF uses a built-in font, so only Latin-1 text show
 else prints as `?`) and the naira sign is written `NGN`. An invoice whose lines do not add up
 to its total is not printed.
 
+## Proofs of payment
+
+A school can attach a photo or PDF of its transfer receipt. The file lives in the control
+plane's **own** bucket (`PROOF_R2_*` on the web app), never a school's, and a school never holds
+a credential for it:
+
+1. The school's server sends `POST /api/claims/proof`, signed with purpose **`proof-v1`**, with
+   `{ "content_type": "image/jpeg", "size_bytes": 250000 }`. JPEG, PNG, WebP or PDF, up to 5 MB.
+2. The answer has `proof_path` (`proofs/<slug>/<uuid>.<ext>`), an `upload_url` good for five
+   minutes and the `upload_headers` to send. The type and exact length are signed into the link,
+   so the bucket refuses any other file.
+3. The school `PUT`s the file to `upload_url` with those headers, then names `proof_path` in its
+   claim. The claim endpoint and the database both refuse a path that is not that school's own.
+4. Staff click **View proof** on the claim. That route (owner and finance) writes an audit row
+   (`claim.proof_view`) and redirects to a link that works for two minutes.
+
+Without the `PROOF_R2_*` settings the upload endpoint answers 503 and claims go without a proof.
+Set all four or none; the app will not start with a partial set. Give the token Object Read &
+Write on that bucket only, and add a lifecycle rule that deletes objects after, say, 400 days
+(an upload that is never claimed otherwise stays). The proof is a photo of a bank receipt:
+treat the bucket as private and never make it public.
+
+## Card payments (Paystack)
+
+One Paystack account, yours, receives every school's card payments.
+
+1. The school's server sends `POST /api/paystack/checkout`, signed with purpose
+   **`checkout-v1`**: `{ "subscription_reference": "SUB-0A1B2C3D", "payer_email": "...",
+"return_url": "https://school.example/renewal" }`. The amount is **never** sent: it is the
+   invoice's, read from the database.
+2. The control plane records the checkout (`PSK-` and 16 characters is the reference) and asks
+   Paystack for a payment page. The answer is `{ ok, authorization_url, reference }`; the
+   school redirects the payer there. The reply is refused unless it is an https page on
+   `paystack.com` for that reference.
+3. When the payer pays, Paystack calls `POST /api/paystack/webhook`. The body's HMAC-SHA512
+   signature (`x-paystack-signature`, your secret key) is checked before anything is read.
+4. A database function matches the charge to its checkout and checks the amount and currency
+   (NGN) against the invoice. If they match and the invoice is open, the invoice is paid
+   (`method = paystack`, `payment_ref` = our reference) and the licence is pushed, exactly as
+   for a confirmed transfer. A school suspended by the lapse rule is lifted.
+
+Everything else is recorded as **needing review**, changes nothing for the school, shows under
+**Card payments needing review** on the Billing screen and sends a Telegram notice: a charge of
+the wrong amount or currency, a second charge for an invoice that is already paid, a charge for a
+cancelled or refunded invoice. A person decides (usually: refund it from the Paystack dashboard)
+and records what they did. The control plane does not move money.
+
+- If the school also sent a transfer claim for the same invoice, a matching card payment closes
+  that claim with the reason "paid by card" and pays the invoice.
+- Paystack is told 200 for anything it should not resend, and 500 only when we could not write
+  the payment down, so that it retries. A repeated webhook changes nothing.
+- A card payment is for the invoice only. Top-ups are not paid by card yet.
+
+Setup: put your **secret** key in `PAYSTACK_SECRET_KEY` on the web app, and set the webhook URL
+in the Paystack dashboard to `https://<the dashboard>/api/paystack/webhook`. Paystack's webhook
+source addresses are published and could be allowed at your host; the signature is what is
+checked here. Try it with a `sk_test_` key first. Without the key, checkout answers "not
+available" and schools pay by transfer.
+
 ## What is not built yet
 
-- **Paystack** (plan M3): card payments, webhooks, receipts.
-- The **renewal screen in school_app** that builds and sends this request. The signing
-  module, key generator and contract test are in school_app; the screen is not.
-- **Viewing proof of payment** (the claim carries a path; nothing fetches or shows it yet).
-  The proof lives in the school's own R2 bucket, and the control plane holds no credentials
-  for it, so this needs a decision first.
-- A school **claiming a top-up** (top-ups are marked paid by finance for now).
+- The **renewal screen in school_app** (the school's side of all of this). In progress: see the
+  school_app patch.
+- A school **claiming or paying by card for a top-up** (top-ups are paid by finance for now).
+- Refunding a card payment from here: refund it in the Paystack dashboard, then record it.

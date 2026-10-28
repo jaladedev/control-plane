@@ -1,6 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import { decideAccess, type Aal } from "@/lib/access";
+import { decideAccess, isPublicPath, type Aal } from "@/lib/access";
 
 // Runs on every page request. Refreshes the session, then applies the access
 // rules in lib/access.ts: signed out goes to /login, a password-only session
@@ -34,13 +34,7 @@ export async function middleware(request: NextRequest) {
 
   // A fully signed-in session for someone who is no longer an active dashboard
   // user (deactivated, or never one): end it.
-  if (
-    signedIn &&
-    aal === "aal2" &&
-    path !== "/api/health" &&
-    path !== "/api/cron/health" &&
-    path !== "/api/claims"
-  ) {
+  if (signedIn && aal === "aal2" && !isPublicPath(path)) {
     const { data: role } = await supabase.rpc("dashboard_role");
     if (!role) {
       await supabase.auth.signOut();

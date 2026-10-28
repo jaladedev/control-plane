@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decideAccess } from "@/lib/access";
+import { decideAccess, isPublicPath } from "@/lib/access";
 
 const go = (to: string) => ({ action: "redirect", to });
 const allow = { action: "allow" };
@@ -9,6 +9,29 @@ describe("decideAccess", () => {
     for (const path of ["/api/health", "/api/cron/health"]) {
       expect(decideAccess({ path, signedIn: false, aal: null })).toEqual(allow);
       expect(decideAccess({ path, signedIn: true, aal: "aal1" })).toEqual(allow);
+    }
+  });
+
+  it("lets the signed school and Paystack endpoints through, and only those", () => {
+    for (const path of [
+      "/api/claims",
+      "/api/claims/proof",
+      "/api/paystack/checkout",
+      "/api/paystack/webhook",
+    ]) {
+      expect(isPublicPath(path)).toBe(true);
+      expect(decideAccess({ path, signedIn: false, aal: null })).toEqual(allow);
+    }
+    for (const path of [
+      "/api/claims/other",
+      "/api/claims/proof/",
+      "/api/paystack",
+      "/api/paystack/other",
+      "/billing/x/pdf",
+      "/billing/proof/x",
+    ]) {
+      expect(isPublicPath(path)).toBe(false);
+      expect(decideAccess({ path, signedIn: false, aal: null })).toEqual(go("/login"));
     }
   });
 

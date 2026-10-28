@@ -83,7 +83,7 @@ select id as s3 from subscriptions where school_id = :'beta' and status = 'pendi
 select reference as ref3 from subscriptions where id = :'s3' \gset
 
 -- ------------------------------------------------------------------ claims
-select submit_claim(:'alpha', :'ref1', 'client-ref-0001', 15000000, current_date, 'Bursar A', 'NIP123', 'proofs/a.jpg', 'bursar@alpha.example') as c1 \gset
+select submit_claim(:'alpha', :'ref1', 'client-ref-0001', 15000000, current_date, 'Bursar A', 'NIP123', 'proofs/alpha/123e4567-e89b-42d3-a456-426614174000.jpg', 'bursar@alpha.example') as c1 \gset
 select pg_temp.assert((select status = 'pending' and amount_kobo = 15000000 and claimed_by = 'bursar@alpha.example' from payment_claims where id = :'c1'), 'a claim is recorded pending');
 select pg_temp.assert((select status from subscriptions where id = :'s1') = 'pending_confirmation', 'and the invoice waits for confirmation');
 select pg_temp.assert((select count(*) from jobs where type = 'telegram_notify' and payload ->> 'kind' = 'claim' and payload ->> 'claim_id' = :'c1') = 1, 'a Telegram notice is queued');
