@@ -324,7 +324,7 @@ async function main() {
       claim.status === 401 && claimBody?.ok === false && claimBody?.error === "Request rejected.",
       `${claim.status} ${JSON.stringify(claimBody)}`
     );
-    for (const path of ["/api/claims/proof", "/api/paystack/checkout"]) {
+    for (const path of ["/api/claims/proof", "/api/invoices", "/api/paystack/checkout"]) {
       const res = await fetch(`${base}${path}`, {
         method: "POST",
         redirect: "manual",

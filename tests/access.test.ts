@@ -16,6 +16,7 @@ describe("decideAccess", () => {
     for (const path of [
       "/api/claims",
       "/api/claims/proof",
+      "/api/invoices",
       "/api/paystack/checkout",
       "/api/paystack/webhook",
     ]) {
@@ -24,6 +25,7 @@ describe("decideAccess", () => {
     }
     for (const path of [
       "/api/claims/other",
+      "/api/invoices/x",
       "/api/claims/proof/",
       "/api/paystack",
       "/api/paystack/other",

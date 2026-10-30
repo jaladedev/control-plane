@@ -175,6 +175,15 @@ the heading is left out. The PDF uses a built-in font, so only Latin-1 text show
 else prints as `?`) and the naira sign is written `NGN`. An invoice whose lines do not add up
 to its total is not printed.
 
+## Open invoices (for the school's renewal screen)
+
+`POST /api/invoices`, signed with purpose **`invoices-v1`**, body `{}`. Read-only. The answer
+lists the school's own open invoices (`pending`, or `pending_confirmation` while a transfer
+claim is checked) with their lines, who to pay (`pay_to`: `BILLING_ISSUER_NAME` and
+`BILLING_ISSUER_LINES`) and whether card payments (`card_enabled`) and proof uploads
+(`proof_enabled`) are switched on. This is what lets a school's screen show what is owed and
+offer to pay it, instead of asking someone to copy a reference from a PDF.
+
 ## Proofs of payment
 
 A school can attach a photo or PDF of its transfer receipt. The file lives in the control
@@ -234,9 +243,17 @@ source addresses are published and could be allowed at your host; the signature 
 checked here. Try it with a `sk_test_` key first. Without the key, checkout answers "not
 available" and schools pay by transfer.
 
+## School side
+
+school_app has the screen that uses all of this: **Bursary > School licence** (for an admin or
+the bursar). It lists the school's open invoices (`/api/invoices`), offers **Pay by card**
+(`/api/paystack/checkout`) and an **I have paid by transfer** form with an optional proof
+(`/api/claims/proof`, then `/api/claims`). It works when the licence has lapsed. Each school
+needs `CONTROL_PLANE_URL` and `CLAIM_SIGNING_KEY` in its env file, and its public key added on
+the control plane (see school_app's `npm run claim-key`).
+
 ## What is not built yet
 
-- The **renewal screen in school_app** (the school's side of all of this). In progress: see the
-  school_app patch.
 - A school **claiming or paying by card for a top-up** (top-ups are paid by finance for now).
 - Refunding a card payment from here: refund it in the Paystack dashboard, then record it.
+- Paying an invoice **partly**: a claim or card payment must equal the invoice.

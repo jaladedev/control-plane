@@ -116,6 +116,17 @@ describe("purposes", () => {
     expect(v(SIG, "proof-v1")).toBe(false);
     expect(v(SIG, "claim-v1")).toBe(true);
   });
+  it("has an invoices purpose of its own", () => {
+    const v = (purpose: "claim-v1" | "invoices-v1") =>
+      verifyClaim({
+        publicKeys: [PUB],
+        ...base,
+        signature: signClaim({ privateKey: SEED, ...base, purpose: "invoices-v1" }),
+        purpose,
+      });
+    expect(v("invoices-v1")).toBe(true);
+    expect(v("claim-v1")).toBe(false);
+  });
   it("refuses a purpose it does not know", () => {
     expect(() => claimMessage({ ...base, purpose: "other" as never })).toThrow(/purpose/);
   });

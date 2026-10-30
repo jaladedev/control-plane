@@ -7,7 +7,7 @@ export type Aal = "aal1" | "aal2" | null;
 export type Decision = { action: "allow" } | { action: "redirect"; to: string };
 
 // /api/cron/health has no session; it checks its own bearer secret.
-// /api/claims, /api/claims/proof and /api/paystack/checkout are called by a school's
+// /api/claims, /api/claims/proof, /api/invoices and /api/paystack/checkout are called by a school's
 // server and check the school's signature. /api/paystack/webhook is called by
 // Paystack and checks Paystack's signature.
 const ALWAYS_PUBLIC = [
@@ -15,6 +15,7 @@ const ALWAYS_PUBLIC = [
   "/api/cron/health",
   "/api/claims",
   "/api/claims/proof",
+  "/api/invoices",
   "/api/paystack/checkout",
   "/api/paystack/webhook",
 ];
