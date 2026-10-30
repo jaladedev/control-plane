@@ -18,7 +18,8 @@ import {
 //
 // The purpose is "claim-v1" for a payment claim, "proof-v1" for asking to upload a
 // proof of payment, "checkout-v1" for starting a card payment and "invoices-v1" for
-// asking which invoices are open. It is part of
+// asking which invoices are open, "receipts-v1" for the list of paid invoices and
+// a receipt PDF. It is part of
 // what is signed, so a request signed for one purpose is worthless for another.
 // A signed request is only accepted within CLAIM_MAX_SKEW_SECONDS of now, and a
 // replay inside that window is harmless because a claim is idempotent on its
@@ -28,7 +29,13 @@ import {
 
 export const CLAIM_MAX_SKEW_SECONDS = 300;
 
-export const SIGNATURE_PURPOSES = ["claim-v1", "proof-v1", "checkout-v1", "invoices-v1"] as const;
+export const SIGNATURE_PURPOSES = [
+  "claim-v1",
+  "proof-v1",
+  "checkout-v1",
+  "invoices-v1",
+  "receipts-v1",
+] as const;
 export type SignaturePurpose = (typeof SIGNATURE_PURPOSES)[number];
 
 const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");

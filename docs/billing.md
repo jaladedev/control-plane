@@ -184,6 +184,15 @@ claim is checked) with their lines, who to pay (`pay_to`: `BILLING_ISSUER_NAME` 
 (`proof_enabled`) are switched on. This is what lets a school's screen show what is owed and
 offer to pay it, instead of asking someone to copy a reference from a PDF.
 
+## Receipts for the school
+
+`POST /api/receipts` (signed, purpose **`receipts-v1`**, body `{}`) lists the school's paid and
+refunded invoices, newest first (up to 50). `POST /api/receipts/pdf` (same purpose, body
+`{ "reference": "SUB-0A1B2C3D" }`) answers with that invoice's receipt as a PDF, the same
+document staff download from the Billing screen. A school only ever gets its own, only for an
+invoice that was paid, and every download is audited (`receipt.school_download`). An invoice
+whose lines do not add up to its total is not printed.
+
 ## Proofs of payment
 
 A school can attach a photo or PDF of its transfer receipt. The file lives in the control

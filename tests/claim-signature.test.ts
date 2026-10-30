@@ -116,6 +116,14 @@ describe("purposes", () => {
     expect(v(SIG, "proof-v1")).toBe(false);
     expect(v(SIG, "claim-v1")).toBe(true);
   });
+  it("signs the invoices and receipts purposes to agreed literals (also asserted in school_app)", () => {
+    expect(signClaim({ privateKey: SEED, ...base, purpose: "invoices-v1" })).toBe(
+      "2Y3CY43Wyw5fPwMNiznviX80olVxg_5oBT4eiJDxj1St6rDENgZgBcl0a_JRocSGnSpLPFtxOo_lUSnnv-OlBA"
+    );
+    expect(signClaim({ privateKey: SEED, ...base, purpose: "receipts-v1" })).toBe(
+      "dS7NEVA6muQcMufsmYJ7RUVf5Q8Iwu8V3fZ-6qG3baV8UZ7CmGbfBwIl-KJ9Ll1Qc-k2GRrY3PJMGjPRZ4qkDw"
+    );
+  });
   it("has an invoices purpose of its own", () => {
     const v = (purpose: "claim-v1" | "invoices-v1") =>
       verifyClaim({
@@ -125,6 +133,14 @@ describe("purposes", () => {
         purpose,
       });
     expect(v("invoices-v1")).toBe(true);
+    expect(v("claim-v1")).toBe(false);
+  });
+  it("has a receipts purpose of its own", () => {
+    const sig = signClaim({ privateKey: SEED, ...base, purpose: "receipts-v1" });
+    const v = (purpose: "claim-v1" | "invoices-v1" | "receipts-v1") =>
+      verifyClaim({ publicKeys: [PUB], ...base, signature: sig, purpose });
+    expect(v("receipts-v1")).toBe(true);
+    expect(v("invoices-v1")).toBe(false);
     expect(v("claim-v1")).toBe(false);
   });
   it("refuses a purpose it does not know", () => {
