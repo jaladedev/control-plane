@@ -85,3 +85,36 @@ as the moment before that school's migrations ran.
    the Migrations screen and confirm it matches before any further rollout.
 
 Rehearse steps 1 to 5 once, on a school you can afford to lose, before you need them.
+
+## Restore drill (`scripts/restore-drill.sh`)
+
+A backup nobody has restored is a hope. The drill proves one can be turned back into a working
+database, and times it. Run it **on your own machine**: it needs the offline age private key,
+which the control plane never has. It restores into a **scratch Postgres** only, and refuses any
+Supabase or pooler host.
+
+```
+AGE_IDENTITY=~/keys/school-backups-key.txt \
+OBJECT_KEY=schools/greenfield/20261101T0300-<id>.dump.age EXPECTED_SHA256=<from the backups table> \
+R2_ENDPOINT=... R2_BUCKET=... R2_ACCESS_KEY_ID=... R2_SECRET_ACCESS_KEY=... \
+PGHOST=localhost PGUSER=postgres \
+SOURCE_URL=postgresql://...   `# optional, read-only: row counts side by side` \
+bash scripts/restore-drill.sh
+```
+
+Use `DRILL_FILE=<path>` instead of `OBJECT_KEY` and the R2 variables for a file you already
+downloaded, and `KIND=control-plane` for the control plane's own backup. It checks the checksum
+before decrypting, decrypts, lists, restores into a throwaway database, confirms the tables that
+matter exist (for a school, also its migration history, which the control plane treats as the truth
+about what the school has), then drops the database and deletes the plaintext, however it ends. The
+last line is a `DRILL {...}` result.
+
+Then record it on the school's page (**Settings and backups, Restore drills**): which backup, passed or
+failed, how many minutes. The record cannot be edited later. The plan's fire drill (before school #3) is
+this, plus timing provisioning, migrating and suspending.
+
+**Verified:** against a scratch Postgres with the real `pg_dump`, `age`, `pg_restore` and `psql`
+(`tests/restore-drill.test.ts`): checksum refusal before decrypting, wrong key, junk file, a dump with no
+migration history, the Supabase-host refusal, cleanup on success and on failure, row counts beside a
+source that has moved on. **Not verified:** a download from real R2, a dump taken from a real Supabase
+project, and the time a real-size database takes. Its numbers are only meaningful on your own data.

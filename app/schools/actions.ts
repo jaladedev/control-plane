@@ -7,6 +7,8 @@ import { createSchool, setSchoolStatus, updateSchool } from "@/lib/actions/schoo
 import { pushLicense, revokeLicense, setLicense } from "@/lib/actions/license";
 import { createSupportLink } from "@/lib/actions/support";
 import { startProvisioning } from "@/lib/actions/provision";
+import { applySchoolSettings } from "@/lib/actions/rollouts";
+import { recordRestoreDrill } from "@/lib/actions/drills";
 
 // Form actions for the schools screens: each does its work through the guarded
 // functions in lib/actions/schools.ts and comes back with ?ok or ?error=<text>.
@@ -99,6 +101,29 @@ export async function provisionSchoolAction(formData: FormData) {
   revalidatePath("/");
   revalidatePath(`/schools/${id}`);
   redirect(`/schools/${id}?ok=provisioning`);
+}
+
+export async function applySettingsAction(formData: FormData) {
+  const id = String(formData.get("schoolId") ?? "");
+  try {
+    await applySchoolSettings(id, formData.get("confirm"));
+  } catch (error) {
+    redirect(`/schools/${encodeURIComponent(id)}?error=${encodeURIComponent(message(error))}`);
+  }
+  revalidatePath(`/schools/${id}`);
+  redirect(`/schools/${id}?ok=settings_queued`);
+}
+
+export async function recordDrillAction(formData: FormData) {
+  const id = String(formData.get("schoolId") ?? "");
+  const back = id ? `/schools/${encodeURIComponent(id)}` : "/";
+  try {
+    await recordRestoreDrill(fields(formData));
+  } catch (error) {
+    redirect(`${back}?error=${encodeURIComponent(message(error))}`);
+  }
+  revalidatePath(back);
+  redirect(`${back}?ok=drill_recorded`);
 }
 
 // Returns the link in the response body instead of redirecting, so the token

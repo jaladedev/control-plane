@@ -231,6 +231,36 @@ export async function rollbackSchool(
 }
 
 /**
+ * Applies the school's container settings (SCHOOL_APP_ENVS on the worker) to its
+ * running container: rotated keys, a new setting. The dashboard holds none of
+ * those values; it only queues the job. The owner types the school's name because
+ * the school restarts. One attempt (the server puts the old settings back itself
+ * if the school is unhealthy on the new ones).
+ */
+export async function applySchoolSettings(
+  schoolId: string,
+  confirm: unknown
+): Promise<{ jobId: string }> {
+  const actor = await requireActor(["owner"]);
+  const school = z.string().uuid().parse(schoolId);
+  const admin = createAdminClient();
+
+  const slug = await schoolSlug(admin, school);
+  needSlug(confirm, slug);
+
+  return withAudit(
+    actor,
+    { action: "school.apply_settings", schoolId: school, details: { slug } },
+    async () => ({
+      jobId: (await rpc(admin, "queue_reconfigure", {
+        p_school: school,
+        p_by: actor.email,
+      })) as string,
+    })
+  );
+}
+
+/**
  * Asks the worker to read a commit's migrations from GitHub and register the
  * release. The very first registration (which needs --baseline) is still done
  * with the register-release command.

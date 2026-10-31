@@ -16,6 +16,8 @@ export type DeployCommand =
   | { action: "deploy"; slug: string; tag: string }
   // The env file text goes to the server on stdin, never on the command line.
   | { action: "create"; slug: string; tag: string; hostnames: string[]; env: string }
+  // New settings for a running school; same stdin rule as create.
+  | { action: "reconfigure"; slug: string; env: string }
   | { action: "rollback" | "status" | "remove"; slug: string };
 
 export type DeployConfig = {
@@ -120,6 +122,7 @@ export function commandLine(cmd: DeployCommand): string {
     if (!cmd.hostnames.every((h) => HOSTNAME.test(h))) throw new Error("Bad hostname.");
     return `create ${cmd.slug} ${cmd.tag} ${cmd.hostnames.join(" ")}`;
   }
+  if (cmd.action === "reconfigure") return `reconfigure ${cmd.slug}`;
   if (cmd.action !== "rollback" && cmd.action !== "status" && cmd.action !== "remove")
     throw new Error("Unknown deploy action.");
   return `${cmd.action} ${cmd.slug}`;
@@ -147,7 +150,7 @@ export async function runDeployCommand(
   const res = await (cfg.exec ?? sshExec)(
     args,
     timeoutMs,
-    cmd.action === "create" ? cmd.env : undefined
+    cmd.action === "create" || cmd.action === "reconfigure" ? cmd.env : undefined
   );
 
   if (res.timedOut) {
@@ -164,11 +167,13 @@ export async function runDeployCommand(
     return { ok: true, code: 0, status: result.status, tag: result.tag, message: "" };
   }
   const known =
-    res.code === 3 && cmd.action === "create"
-      ? "The server already has a school with this slug."
-      : res.code !== null
-        ? EXIT_MESSAGES[res.code]
-        : undefined;
+    res.code === 10 && cmd.action === "reconfigure"
+      ? "The school was not healthy on the new settings; the server put the old settings back."
+      : res.code === 3 && cmd.action === "create"
+        ? "The server already has a school with this slug."
+        : res.code !== null
+          ? EXIT_MESSAGES[res.code]
+          : undefined;
   const detail =
     known ??
     (res.code === 255

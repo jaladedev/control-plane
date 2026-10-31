@@ -110,3 +110,36 @@ describe("create: running it", () => {
     expect(out.ok).toBe(true);
   });
 });
+
+describe("reconfigure", () => {
+  const cmd = { action: "reconfigure" as const, slug: "greenfield", env: ENV };
+
+  it("is just the verb and the slug on the command line", () => {
+    expect(commandLine(cmd)).toBe("reconfigure greenfield");
+    expect(() => commandLine({ ...cmd, slug: "Green; id" })).toThrow(/slug/);
+  });
+
+  it("sends the env file on stdin, and only there", async () => {
+    const run = exec(result("reconfigure", "ok"));
+    const out = await runDeployCommand({ ...base, exec: run }, cmd);
+    expect(out).toMatchObject({ ok: true, status: "ok", tag: TAG });
+    const [args, , stdin] = run.mock.calls[0];
+    expect(stdin).toBe(ENV);
+    expect(args.join(" ")).not.toContain("very-secret-value");
+    expect(args.at(-1)).toBe("reconfigure greenfield");
+  });
+
+  it("explains exit 10 as old settings put back, not as a rolled-back deploy", async () => {
+    const out = await runDeployCommand(
+      { ...base, exec: exec(result("reconfigure", "rolled_back"), 10) },
+      cmd
+    );
+    expect(out).toMatchObject({ ok: false, code: 10 });
+    expect(out.message).toMatch(/old settings back/);
+    const deploy = await runDeployCommand(
+      { ...base, exec: exec(result("deploy", "rolled_back"), 10) },
+      { action: "deploy", slug: "greenfield", tag: TAG }
+    );
+    expect(deploy.message).toMatch(/rolled back to the old one/);
+  });
+});

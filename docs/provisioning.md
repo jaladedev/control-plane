@@ -68,5 +68,6 @@ and delete its project.
 - It creates ONE admin only. Everyone else is added from inside the school, as usual.
 - The temporary password is in your Telegram chat. Anyone who can read that chat can sign in as the
   admin until the password is changed at first sign-in, so delete the message once you have passed it on.
+- Changing a running school's settings later (rotating a key) is **Apply settings**, see `docs/key-rotation.md`.
 - The container settings are plain environment values on the worker, like `SCHOOL_DB_URLS`.
   That is the plan's "interim" state; replace with Infisical before hosting more schools.

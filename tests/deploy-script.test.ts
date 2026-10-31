@@ -327,3 +327,113 @@ describe("unknown tag typo guard", () => {
     expect(run(["deploy", "greenfield", C.toUpperCase()]).code).toBe(2);
   });
 });
+
+describe("reconfigure", () => {
+  const NEW = "SCHOOL_SLUG=greenfield\nPAYSTACK_SECRET_KEY=sk_test_rotated\n";
+  const reconfigure = (body = NEW) => run(["reconfigure", "greenfield"], body);
+
+  it("writes the new env file, restarts on the SAME tag and reports ok", () => {
+    create();
+    const r = reconfigure();
+    expect(r.code).toBe(0);
+    expect(r.result).toEqual({ slug: "greenfield", action: "reconfigure", status: "ok", tag: A });
+    expect(readFileSync(p("env/greenfield.env"), "utf8")).toBe(NEW);
+    expect(image()).toContain(A);
+    expect(state("current")).toBe(A);
+    expect(existsSync(p("state/greenfield/previous"))).toBe(false);
+    expect((statSync(p("env/greenfield.env")).mode & 0o777).toString(8)).toBe("600");
+  });
+
+  it("does not pull an image, and leaves the route alone", () => {
+    create();
+    const route = readFileSync(p("routes/greenfield.caddy"), "utf8");
+    const before = calls()
+      .split("\n")
+      .filter((l) => l.startsWith("docker pull")).length;
+    reconfigure();
+    expect(
+      calls()
+        .split("\n")
+        .filter((l) => l.startsWith("docker pull")).length
+    ).toBe(before);
+    expect(readFileSync(p("routes/greenfield.caddy"), "utf8")).toBe(route);
+  });
+
+  it("deletes the old env file once the new one is healthy, so a rotated key does not linger", () => {
+    create();
+    reconfigure();
+    expect(existsSync(p("state/greenfield/env.prev"))).toBe(false);
+    expect(existsSync(p("env/greenfield.env.new"))).toBe(false);
+  });
+
+  it("puts the old env file back and restarts on it when the new one is not healthy (exit 10)", () => {
+    create();
+    const r = reconfigure(NEW + "BREAK=1\n");
+    expect(r.code).toBe(10);
+    expect(r.result).toMatchObject({ action: "reconfigure", status: "rolled_back", tag: A });
+    expect(readFileSync(p("env/greenfield.env"), "utf8")).toBe(ENV);
+    expect(existsSync(p("state/greenfield/env.prev"))).toBe(false);
+    expect(readFileSync(p("env/greenfield.env"), "utf8")).not.toContain("rotated");
+  });
+
+  it("reports exit 11 when it is unhealthy on the old settings too", () => {
+    create();
+    list("unhealthy", [A]);
+    const r = reconfigure();
+    expect(r.code).toBe(11);
+    expect(r.result?.status).toBe("rollback_failed");
+  });
+
+  it("refuses a school the server does not have, changing nothing", () => {
+    const r = reconfigure();
+    expect(r.code).toBe(3);
+    expect(existsSync(p("env/greenfield.env"))).toBe(false);
+    expect(calls()).not.toContain("docker run");
+  });
+
+  it.each([
+    ["no SCHOOL_SLUG", "PAYSTACK_SECRET_KEY=x\n"],
+    ["another school's SCHOOL_SLUG", "SCHOOL_SLUG=other\n"],
+    ["IMAGE_TAG", "SCHOOL_SLUG=greenfield\nIMAGE_TAG=abc\n"],
+    ["a bare key", "SCHOOL_SLUG=greenfield\nHOME\n"],
+  ])("refuses an env file with %s, touching nothing", (_why, body) => {
+    create();
+    const runsBefore = calls()
+      .split("\n")
+      .filter((l) => l.startsWith("docker run")).length;
+    const r = reconfigure(body);
+    expect(r.code).toBe(2);
+    expect(r.result?.status).toBe("error");
+    expect(readFileSync(p("env/greenfield.env"), "utf8")).toBe(ENV);
+    expect(
+      calls()
+        .split("\n")
+        .filter((l) => l.startsWith("docker run")).length
+    ).toBe(runsBefore);
+  });
+
+  it("is refused while another operation holds the school's lock", () => {
+    create();
+    mkdirSync(p("state/locks"), { recursive: true });
+    const holder = spawn("flock", [p("state/locks/greenfield.lock"), "sleep", "3"]);
+    try {
+      spawnSync("sleep", ["0.3"]);
+      const r = reconfigure();
+      expect(r.code).toBe(12);
+      expect(readFileSync(p("env/greenfield.env"), "utf8")).toBe(ENV);
+    } finally {
+      holder.kill();
+    }
+  });
+
+  it("never puts a secret on a command line, in the call list or in the log", () => {
+    create();
+    reconfigure();
+    expect(calls()).not.toContain("sk_test_rotated");
+    expect(readFileSync(p("state/deploy.log"), "utf8")).not.toContain("sk_test_rotated");
+  });
+
+  it("refuses extra words", () => {
+    expect(run(["reconfigure", "greenfield", A], NEW).code).toBe(2);
+  });
+});

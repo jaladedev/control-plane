@@ -4,6 +4,7 @@
 #
 #   create <slug> <tag> <hostname>...   env file on stdin; starts the container
 #   deploy <slug> <tag>                 swap to <tag>; roll back if not healthy
+#   reconfigure <slug>                  new env file on stdin; restarts on the same tag
 #   rollback <slug>                     back to the previous tag
 #   remove <slug>                       stop the container, drop route and env file
 #   status <slug>                       current/previous tag and whether it runs
@@ -13,7 +14,8 @@
 # shell. Secrets only ever come in on stdin (never the command line).
 #
 # Exit codes: 0 ok | 2 usage | 3 precondition (unknown or duplicate school, no
-# previous tag) | 10 failed health check, rolled back to the old tag | 11 failed
+# previous tag) | 10 failed health check, rolled back to the old tag (or, for
+# reconfigure, to the old env file) | 11 failed
 # and the rollback failed too | 12 another operation holds the school's lock |
 # 13 proxy route could not be loaded | 14 create failed, everything cleaned up |
 # 15 image could not be pulled, nothing changed.
@@ -119,14 +121,14 @@ wait_healthy() { # tag
 
 run_tag() { start_container "$1" && wait_healthy "$1"; }
 
-cmd_create() {
-  local envdata line hosts=("$@")
-  if [ -d "$STATE_DIR/$SLUG" ] || [ -e "$ENV_DIR/$SLUG.env" ]; then
-    die 3 "$SLUG already exists." exists
-  fi
+# Reads the env file from stdin and checks it. Used by create and reconfigure, so
+# both refuse the same mistakes. Sets ENVDATA; dies (exit 2) on a bad file. It must
+# not run in a subshell, or its die would end only the subshell.
+ENVDATA=""
+read_env() {
+  local envdata line seen_slug=0
   envdata="$(head -c 65537)"
   [ "${#envdata}" -le 65536 ] || die 2 "Env file is too large."
-  local seen_slug=0
   while IFS= read -r line; do
     if [ -z "$line" ] || [[ "$line" =~ ^# ]]; then continue; fi
     if ! [[ "$line" =~ ^[A-Z][A-Z0-9_]*=.*$ ]]; then die 2 "Env file has a line that is not KEY=value."; fi
@@ -138,9 +140,18 @@ cmd_create() {
     fi
   done <<< "$envdata"
   if [ "$seen_slug" != 1 ]; then die 2 "The env file must set SCHOOL_SLUG=$SLUG."; fi
+  ENVDATA="$envdata"
+}
+
+cmd_create() {
+  local hosts=("$@")
+  if [ -d "$STATE_DIR/$SLUG" ] || [ -e "$ENV_DIR/$SLUG.env" ]; then
+    die 3 "$SLUG already exists." exists
+  fi
+  read_env
 
   mkdir -p "$ENV_DIR" "$ROUTES_DIR"
-  printf '%s\n' "$envdata" > "$ENV_DIR/$SLUG.env"
+  printf '%s\n' "$ENVDATA" > "$ENV_DIR/$SLUG.env"
   chmod 600 "$ENV_DIR/$SLUG.env"
 
   cleanup_create() {
@@ -167,6 +178,39 @@ cmd_create() {
   fi
   log "created at $TAG for ${hosts[*]}"
   emit ok "$TAG"
+}
+
+# New settings for a school that is running: a rotated key, a new setting. The old
+# env file is kept only until the new one has proved healthy, then deleted, so a
+# key that was rotated out does not linger on disk. If the school is not healthy
+# on the new settings, the old file is put back and the container restarted on it.
+cmd_reconfigure() {
+  local cur
+  cur="$(read_state current)"
+  [ -n "$cur" ] && [ -e "$ENV_DIR/$SLUG.env" ] || die 3 "No such school: $SLUG. Use create first." unknown
+  TAG="$cur"
+  read_env
+
+  local prev="$STATE_DIR/$SLUG/env.prev"
+  cp -p "$ENV_DIR/$SLUG.env" "$prev"
+  printf '%s\n' "$ENVDATA" > "$ENV_DIR/$SLUG.env.new"
+  chmod 600 "$ENV_DIR/$SLUG.env.new"
+  mv "$ENV_DIR/$SLUG.env.new" "$ENV_DIR/$SLUG.env"
+
+  if run_tag "$cur"; then
+    rm -f "$prev"
+    log "reconfigured at $cur"
+    emit ok "$cur"
+    return 0
+  fi
+  echo "The school was not healthy on the new settings; putting the old ones back." >&2
+  mv "$prev" "$ENV_DIR/$SLUG.env"
+  if run_tag "$cur"; then
+    log "reconfigure failed; old settings restored at $cur"
+    emit rolled_back "$cur"
+    exit 10
+  fi
+  die 11 "The school was unhealthy on the new settings AND on the old ones." rollback_failed
 }
 
 cmd_deploy() {
@@ -238,10 +282,10 @@ else
 fi
 usage() { echo "ERROR: $1" >&2; ACTION=""; SLUG=""; TAG=""; emit usage ""; exit 2; }
 
-[ "${#ARGS[@]}" -ge 2 ] || usage "Usage: create|deploy|rollback|remove|status <slug> ..."
+[ "${#ARGS[@]}" -ge 2 ] || usage "Usage: create|deploy|reconfigure|rollback|remove|status <slug> ..."
 valid_slug "${ARGS[1]}" || usage "Bad school slug."
 case "${ARGS[0]}" in
-  create | deploy | rollback | remove | status) ;;
+  create | deploy | reconfigure | rollback | remove | status) ;;
   *) usage "Unknown command." ;;
 esac
 ACTION="${ARGS[0]}"
@@ -262,6 +306,11 @@ case "$ACTION" in
     TAG="${ARGS[2]}"
     take_lock
     cmd_deploy
+    ;;
+  reconfigure)
+    [ "${#ARGS[@]}" -eq 2 ] || usage "Usage: reconfigure <slug>"
+    take_lock
+    cmd_reconfigure
     ;;
   rollback)
     [ "${#ARGS[@]}" -eq 2 ] || usage "Usage: rollback <slug>"

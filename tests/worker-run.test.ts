@@ -40,6 +40,7 @@ describe("tick", () => {
       "license_push",
       "telegram_notify",
       "provision_school",
+      "reconfigure_school",
     ]);
   });
 

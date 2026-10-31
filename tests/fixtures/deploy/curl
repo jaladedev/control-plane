@@ -8,4 +8,7 @@ host="${url#http://}"; host="${host%%:*}"; n="${host#ip-}"
 [ -d "$d/containers/$n" ] || exit 7
 image="$(cat "$d/containers/$n/image")"; tag="${image##*:}"
 if grep -qx "$tag" "$d/unhealthy" 2> /dev/null; then echo '{"ok":false}'; exit 22; fi
+# A container whose env file has the line BREAK=1 is unhealthy (a bad new setting).
+envf="$(grep -A1 -x -e '--env-file' "$d/containers/$n/args" 2> /dev/null | tail -1)"
+if [ -n "$envf" ] && grep -qx 'BREAK=1' "$envf" 2> /dev/null; then echo '{"ok":false}'; exit 22; fi
 echo "{\"ok\":true,\"version\":\"$tag\",\"slug\":\"${n#school-}\"}"

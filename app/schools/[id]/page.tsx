@@ -9,6 +9,7 @@ import { LicenseForm } from "@/components/LicenseForm";
 import { SupportLink } from "@/components/SupportLink";
 import { SigningKeys } from "@/components/SigningKeys";
 import { ProvisionPanel } from "@/components/ProvisionPanel";
+import { SchoolOps } from "@/components/SchoolOps";
 import { HealthBadge, LicenseBadge, ago } from "@/components/badges";
 import { setStatusAction, updateSchoolAction } from "@/app/schools/actions";
 
@@ -19,6 +20,9 @@ const OK: Record<string, string> = {
   licensed: "Licence saved and delivered to the school.",
   pushed: "Licence delivered to the school.",
   revoked: "Licence revoked. The school is now read-only.",
+  settings_queued:
+    "Applying settings. The worker restarts the school; see the result under Recent jobs.",
+  drill_recorded: "Restore drill recorded.",
   provisioning: "Provisioning queued. Each step shows below as the worker does it.",
   key_added: "Claim key added.",
   key_revoked: "Claim key revoked. The school can no longer sign claims with it.",
@@ -66,6 +70,28 @@ export default async function SchoolPage({
           .select("id, public_key, created_at, revoked_at")
           .eq("school_id", school.id)
           .order("created_at", { ascending: false })
+      ).data ?? [])
+    : [];
+
+  const opsDrills = isOwner
+    ? ((
+        await supabase
+          .from("restore_drills")
+          .select("id, drilled_at, ok, seconds, notes, recorded_by")
+          .eq("school_id", school.id)
+          .order("drilled_at", { ascending: false })
+          .limit(10)
+      ).data ?? [])
+    : [];
+  const opsBackups = isOwner
+    ? ((
+        await supabase
+          .from("backups")
+          .select("id, started_at, size_bytes")
+          .eq("school_id", school.id)
+          .eq("status", "succeeded")
+          .order("started_at", { ascending: false })
+          .limit(10)
       ).data ?? [])
     : [];
 
@@ -144,6 +170,13 @@ export default async function SchoolPage({
         <section className="space-y-3">
           <h2 className="font-semibold">Provision this school</h2>
           <ProvisionPanel school={school} steps={provisionSteps} job={provisionJob} />
+        </section>
+      )}
+
+      {isOwner && school.status !== "provisioning" && (
+        <section className="space-y-3">
+          <h2 className="font-semibold">Settings and backups</h2>
+          <SchoolOps school={school} drills={opsDrills} backups={opsBackups} />
         </section>
       )}
 

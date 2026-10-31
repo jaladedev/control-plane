@@ -7,6 +7,7 @@ SSH key, so the key cannot do anything else.
 ```
 create <slug> <tag> <hostname>...   env file on stdin; pulls, starts, waits for health, adds the proxy route
 deploy <slug> <tag>                 pulls, swaps, waits for health; goes back to the old tag if it is not healthy
+reconfigure <slug>                  new env file on stdin; restarts on the same tag
 rollback <slug>                     back to the previous tag (same health check)
 remove <slug>                       stops the container, removes its route and env file
 status <slug>                       current and previous tag, and whether the container runs
@@ -16,17 +17,17 @@ status <slug>                       current and previous tag, and whether the co
 `<slug>` and hostnames are lowercase and checked against strict patterns. The last
 line of output is always `RESULT {"slug":…,"action":…,"status":…,"tag":…}`.
 
-| Exit | Meaning                                                               |
-| ---- | --------------------------------------------------------------------- |
-| 0    | Done                                                                  |
-| 2    | Bad command, slug, tag, hostname or env file                          |
-| 3    | Unknown or already-existing school, or no previous version            |
-| 10   | New version unhealthy; **rolled back** to the old one (deploy failed) |
-| 11   | New version unhealthy and the rollback failed too: look at the server |
-| 12   | Another operation is running for that school                          |
-| 13   | The proxy would not load the route                                    |
-| 14   | `create` failed and everything it made was removed                    |
-| 15   | The image could not be pulled; nothing changed                        |
+| Exit | Meaning                                                                                                                                                |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 0    | Done                                                                                                                                                   |
+| 2    | Bad command, slug, tag, hostname or env file                                                                                                           |
+| 3    | Unknown or already-existing school, or no previous version                                                                                             |
+| 10   | New version unhealthy; **rolled back** to the old one (deploy failed). For `reconfigure`: unhealthy on the new settings; the old env file was put back |
+| 11   | New version unhealthy and the rollback failed too: look at the server                                                                                  |
+| 12   | Another operation is running for that school                                                                                                           |
+| 13   | The proxy would not load the route                                                                                                                     |
+| 14   | `create` failed and everything it made was removed                                                                                                     |
+| 15   | The image could not be pulled; nothing changed                                                                                                         |
 
 **Healthy** means the container runs and `/api/health` answers `ok` with this tag as
 its `version` and this school's `slug`. It is the shallow check on purpose, so a
@@ -54,10 +55,10 @@ database blip never fails or rolls back a deploy.
 
 ## What is and is not verified
 
-Tested (`tests/deploy-script.test.ts`, 36 cases, against a fake `docker` and `curl`):
+Tested (`tests/deploy-script.test.ts`, 49 cases, against a fake `docker` and `curl`):
 input checking, injection attempts staying inert, the env-file rules, the
 health-gated swap, automatic rollback, `rollback`, cleanup after a failed `create`,
-`remove`, and per-school locking.
+`remove`, `reconfigure` (new settings applied, old ones put back when unhealthy), and per-school locking.
 
 **Not verified:** anything on a real server. The real `docker run` flags (memory and
 CPU limits, `--cap-drop ALL`, `no-new-privileges`) have never started the real image,
