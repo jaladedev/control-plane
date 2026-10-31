@@ -1,5 +1,14 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -9,8 +18,20 @@ import { beforeEach, describe, expect, it } from "vitest";
 // rollback, cleanup and locking. It does NOT prove the real docker flags work
 // on the VPS; that needs the staging container (plan section 9).
 
-const SCRIPT = resolve("deploy/school-deploy");
-const FIX = resolve("tests/fixtures/deploy");
+// The script and the fake docker/curl are copied to a temp directory and made
+// executable there, so these tests do not depend on the executable bit surviving in
+// git (a Windows checkout or commit silently drops it, and then nothing can run).
+const STAGE = mkdtempSync(join(tmpdir(), "deploy-bin-"));
+function stage(source: string, name: string): string {
+  const dest = join(STAGE, name);
+  copyFileSync(source, dest);
+  chmodSync(dest, 0o755);
+  return dest;
+}
+const SCRIPT = stage(resolve("deploy/school-deploy"), "school-deploy");
+stage(resolve("tests/fixtures/deploy/docker"), "docker");
+stage(resolve("tests/fixtures/deploy/curl"), "curl");
+const FIX = STAGE;
 const A = "a".repeat(40);
 const B = "b".repeat(40);
 const C = "c".repeat(40);
