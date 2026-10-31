@@ -6,6 +6,7 @@ export const PROVISION_STEPS = [
   "storage",
   "container",
   "license",
+  "admin",
   "health",
   "activate",
 ] as const;

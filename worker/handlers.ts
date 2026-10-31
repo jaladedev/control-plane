@@ -14,6 +14,7 @@ import type { Job, SchoolPatch, Store } from "@/worker/store";
 import type { SecretsProvider } from "@/worker/secrets";
 import { decideBackup, type BackupProvider } from "@/worker/backup";
 import type { StorageCheck } from "@/worker/storage-check";
+import type { AuthAdmin } from "@/worker/auth-admin";
 
 // What the worker does for each kind of job. All I/O comes in through
 // HandlerDeps, so these are tested with fakes; the real wiring is in
@@ -37,6 +38,8 @@ export type HandlerDeps = {
   fetchMigrations?: (tag: string) => Promise<{ name: string; content: string }[]>;
   /** Checks a school's R2 bucket and key. Absent in tests that do not provision. */
   checkStorage?: StorageCheck;
+  /** Creates the first admin in a school's Auth. Absent in tests that do not provision. */
+  authAdmin?: AuthAdmin;
   /** Waits; replaced in tests so the health step does not really wait. */
   sleep?: (ms: number) => Promise<void>;
   /** How often provisioning probes the school's public address before giving up. */

@@ -32,6 +32,19 @@ export async function startProvisioning(
     throw new Error(`${school.slug} is ${school.status}; only a school being provisioned can be.`);
   }
 
+  // The first admin is optional on a resume (it is already saved), required the first time.
+  const adminName = typeof input.admin_name === "string" ? input.admin_name.trim() : "";
+  const adminEmail = typeof input.admin_email === "string" ? input.admin_email.trim() : "";
+  const admin_ =
+    adminName || adminEmail
+      ? z
+          .object({
+            name: z.string().min(2, "Enter the first admin's name.").max(120),
+            email: z.string().email("Enter a valid email for the first admin.").max(200),
+          })
+          .parse({ name: adminName, email: adminEmail })
+      : null;
+
   const withLicense = typeof input.valid_until === "string" && input.valid_until !== "";
   const values = withLicense
     ? buildLicense(
@@ -50,7 +63,12 @@ export async function startProvisioning(
     {
       action: "school.provision",
       schoolId: school.id,
-      details: { slug: school.slug, resume: !withLicense, ...(values ? { license: values } : {}) },
+      details: {
+        slug: school.slug,
+        resume: !withLicense,
+        ...(values ? { license: values } : {}),
+        ...(admin_ ? { first_admin_email: admin_.email.toLowerCase() } : {}),
+      },
     },
     async () => {
       if (values) {
@@ -66,6 +84,13 @@ export async function startProvisioning(
           })
           .eq("id", school.id);
         if (saveError) throw new Error(saveError.message);
+      }
+      if (admin_) {
+        const { error: adminError } = await admin
+          .from("schools")
+          .update({ first_admin_name: admin_.name, first_admin_email: admin_.email.toLowerCase() })
+          .eq("id", school.id);
+        if (adminError) throw new Error(adminError.message);
       }
       // The database's refusals are written for people, so they pass through as they are.
       const { data, error: queueError } = await admin.rpc("queue_provision", {

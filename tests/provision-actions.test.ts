@@ -29,7 +29,14 @@ import { startProvisioning } from "@/lib/actions/provision";
 const owner = { id: "11111111-1111-4111-8111-111111111111", email: "o@example.com", role: "owner" };
 const id = "33333333-3333-4333-8333-333333333333";
 const now = new Date("2026-10-31T10:00:00Z");
-const form = { kind: "trial", session: "2026/2027", valid_until: "2026-12-01", grace_days: "14" };
+const form = {
+  kind: "trial",
+  session: "2026/2027",
+  valid_until: "2026-12-01",
+  grace_days: "14",
+  admin_name: "Ada Obi",
+  admin_email: "Ada@Example.com",
+};
 
 let audited: Array<{ action: string; schoolId?: string | null; details?: Record<string, unknown> }>;
 let order: string[];
@@ -70,7 +77,7 @@ describe("startProvisioning", () => {
   it("writes the audit row first, then saves the licence, then queues the job", async () => {
     const out = await startProvisioning(id, form, now);
     expect(out).toEqual({ jobId: "job-1" });
-    expect(order).toEqual(["audit", "save licence", "rpc:queue_provision"]);
+    expect(order).toEqual(["audit", "save licence", "save licence", "rpc:queue_provision"]);
     expect(mocks.rpc).toHaveBeenCalledWith("queue_provision", {
       p_school: id,
       p_by: "o@example.com",
@@ -98,6 +105,27 @@ describe("startProvisioning", () => {
         license: { student_cap: 300, features: ["messaging"] },
       },
     });
+  });
+
+  it("saves the first admin with a lower-cased email, and audits it without the name", async () => {
+    await startProvisioning(id, form, now);
+    expect(mocks.update).toHaveBeenCalledWith({
+      first_admin_name: "Ada Obi",
+      first_admin_email: "ada@example.com",
+    });
+    expect(audited[0].details).toMatchObject({ first_admin_email: "ada@example.com" });
+    expect(order).toEqual(["audit", "save licence", "save licence", "rpc:queue_provision"]);
+  });
+
+  it("refuses a first admin with a bad email, saving nothing", async () => {
+    await expect(startProvisioning(id, { ...form, admin_email: "nope" }, now)).rejects.toThrow(
+      /valid email/
+    );
+    await expect(
+      startProvisioning(id, { ...form, admin_name: "", admin_email: "a@b.co" }, now)
+    ).rejects.toThrow(/name/);
+    expect(mocks.update).not.toHaveBeenCalled();
+    expect(mocks.rpc).not.toHaveBeenCalled();
   });
 
   it("is a resume, with no licence change, when the form has no licence fields", async () => {

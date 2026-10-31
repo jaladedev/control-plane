@@ -12,6 +12,7 @@ import {
   type HandlerResult,
 } from "@/worker/handlers";
 import { PROVISION_STEPS, type ProvisionStep } from "@/lib/provision/steps";
+import { temporaryPassword } from "@/worker/auth-admin";
 import type { Job } from "@/worker/store";
 
 // Brings a registered school live: its database, its storage, its container
@@ -66,26 +67,30 @@ export async function handleProvisionSchool(job: Job, deps: HandlerDeps): Promis
     return built.file;
   };
 
+  // Connects to the school's database; a refusal is an expected failure, not a crash.
+  const connectToSchool = async () => {
+    let url: string;
+    try {
+      url = await secrets.schoolDatabaseUrl(school.slug);
+    } catch (error) {
+      throw new StepFailure(errorText(error));
+    }
+    try {
+      return await deps.connect(url);
+    } catch (error) {
+      const status = classifyConnectError(error);
+      if (status) {
+        await store.updateSchool(school.id, { credentials_status: status }).catch(() => {});
+      }
+      throw new StepFailure(`Could not connect to the school's database: ${errorText(error)}`);
+    }
+  };
+
   const impl: Record<ProvisionStep, () => Promise<string>> = {
     // 1. The school's own database: every migration of the latest release.
     async database() {
       await settings();
-      let url: string;
-      try {
-        url = await secrets.schoolDatabaseUrl(school.slug);
-      } catch (error) {
-        throw new StepFailure(errorText(error));
-      }
-      let conn: Awaited<ReturnType<HandlerDeps["connect"]>>;
-      try {
-        conn = await deps.connect(url);
-      } catch (error) {
-        const status = classifyConnectError(error);
-        if (status) {
-          await store.updateSchool(school.id, { credentials_status: status }).catch(() => {});
-        }
-        throw new StepFailure(`Could not connect to the school's database: ${errorText(error)}`);
-      }
+      const conn = await connectToSchool();
       try {
         const applied = await readAppliedVersions(conn.db);
         if (applied.length === 0 && (await hasTables(conn.db))) {
@@ -198,7 +203,75 @@ export async function handleProvisionSchool(job: Job, deps: HandlerDeps): Promis
       return "licence delivered";
     },
 
-    // 5. The school answers on its public address, on this release. DNS and the
+    // 5. The school's first admin: a login in its own Auth and its profile rows.
+    //    The temporary password goes to the owner on Telegram and nowhere else,
+    //    so without Telegram this step refuses rather than invent a way to lose it.
+    async admin() {
+      const name = school.first_admin_name?.trim();
+      const email = school.first_admin_email?.trim().toLowerCase();
+      if (!name || !email) throw new StepFailure("The school has no first admin name and email.");
+      if (!deps.authAdmin) throw new StepFailure("The worker has no way to create logins.");
+      if (!deps.telegram) {
+        throw new StepFailure(
+          "Telegram is not set up on the worker (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID), so the " +
+            "temporary password could not be sent to you. Set it up, then resume."
+        );
+      }
+      const env = (await secrets.schoolAppEnv(school.slug)) ?? {};
+      const auth = { url: env.SUPABASE_URL, serviceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY };
+      await settings();
+
+      const conn = await connectToSchool();
+      let userId: string | null = null;
+      try {
+        const existing = await conn.db.query(
+          "select p.id, p.role from profile_contacts c join profiles p on p.id = c.id where lower(c.email) = $1",
+          [email]
+        );
+        const found = existing.rows[0];
+        if (found) {
+          // A resume after the login was made but the step was not recorded.
+          if (found.role === "admin")
+            return `${email} is already an admin; no new password was made`;
+          throw new StepFailure(`${email} already has an account that is not an admin.`);
+        }
+
+        const password = temporaryPassword();
+        const created = await deps.authAdmin.createUser(auth, { email, password });
+        if (!created.ok) throw new StepFailure(`Could not create the login: ${created.error}`);
+        userId = created.id;
+
+        try {
+          await conn.db.query(
+            "insert into profiles (id, role, full_name, must_change_password) values ($1, 'admin', $2, true)",
+            [userId, name]
+          );
+          await conn.db.query("insert into profile_contacts (id, email) values ($1, $2)", [
+            userId,
+            email,
+          ]);
+          // Last, so a password that was not delivered leaves nothing behind.
+          await deps.telegram.send(
+            `First admin for ${school.slug}: ${email}\nTemporary password: ${password}\n` +
+              "They must change it at first sign-in. Delete this message once you have passed it on."
+          );
+        } catch (error) {
+          await conn.db
+            .query("delete from profile_contacts where id = $1", [userId])
+            .catch(() => {});
+          await conn.db.query("delete from profiles where id = $1", [userId]).catch(() => {});
+          await deps.authAdmin.deleteUser(auth, userId).catch(() => {});
+          throw new StepFailure(
+            `The first admin was not kept (${errorText(error)}). Nothing was left behind, so Resume starts clean.`
+          );
+        }
+      } finally {
+        await conn.close().catch(() => {});
+      }
+      return `first admin ${email} created; the temporary password was sent on Telegram`;
+    },
+
+    // 6. The school answers on its public address, on this release. DNS and the
     //    proxy's certificate can take a few minutes, so this tries for a while.
     async health() {
       const attempts = deps.healthAttempts ?? 8;
@@ -218,7 +291,7 @@ export async function handleProvisionSchool(job: Job, deps: HandlerDeps): Promis
       );
     },
 
-    // 6. Live: the registry row flips to active, with an audit row of its own.
+    // 7. Live: the registry row flips to active, with an audit row of its own.
     async activate() {
       const changed = await store.activateSchool(school.id, tag, null, by);
       return changed ? "school is active" : "school was already active";

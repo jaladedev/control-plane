@@ -77,6 +77,8 @@ export type ProvisionContext = {
     hostnames: string[];
     supabase_project_ref: string | null;
     r2_bucket: string | null;
+    first_admin_name: string | null;
+    first_admin_email: string | null;
   };
   /** The newest registered release: the image and migrations a new school starts on. */
   release: { seq: number; image_tag: string } | null;
@@ -540,7 +542,9 @@ export class SupabaseStore implements Store {
     const school = check(
       await this.db
         .from("schools")
-        .select("id, slug, status, hostnames, supabase_project_ref, r2_bucket")
+        .select(
+          "id, slug, status, hostnames, supabase_project_ref, r2_bucket, first_admin_name, first_admin_email"
+        )
         .eq("id", schoolId)
         .maybeSingle(),
       "load school"

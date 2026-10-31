@@ -5,6 +5,7 @@ import { loadWorkerEnv } from "@/worker/env";
 import { ToolsBackupProvider } from "@/worker/backup";
 import { EnvSecrets } from "@/worker/secrets";
 import { makeStorageCheck } from "@/worker/storage-check";
+import { supabaseAuthAdmin } from "@/worker/auth-admin";
 import { fetchMigrationsAtCommit } from "@/lib/github-migrations";
 import { sendTelegram } from "@/lib/billing/telegram";
 import { SupabaseStore } from "@/worker/store";
@@ -66,6 +67,7 @@ async function main() {
       }),
       backupKeep: env.BACKUP_KEEP,
       checkStorage: makeStorageCheck(),
+      authAdmin: supabaseAuthAdmin,
       fetchMigrations: env.GITHUB_TOKEN
         ? (sha) =>
             fetchMigrationsAtCommit({ repo: env.SCHOOL_APP_REPO, sha, token: env.GITHUB_TOKEN! })

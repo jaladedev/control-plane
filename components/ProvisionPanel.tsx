@@ -11,6 +11,8 @@ type School = {
   hostnames: string[] | null;
   license_version: number;
   license_session: string | null;
+  first_admin_name: string | null;
+  first_admin_email: string | null;
 };
 
 const LABELS: Record<string, string> = {
@@ -18,6 +20,7 @@ const LABELS: Record<string, string> = {
   storage: "Storage: check the R2 bucket and key",
   container: "Container, proxy route and domain",
   license: "Licence: deliver to the school",
+  admin: "First admin: create the login (password sent to you on Telegram)",
   health: "First health check on the public address",
   activate: "Go live",
 };
@@ -45,6 +48,7 @@ export function ProvisionPanel({
   const busy = job?.status === "queued" || job?.status === "running";
   const started = steps.length > 0;
   const hasLicense = school.license_version > 0;
+  const hasAdmin = Boolean(school.first_admin_email);
 
   return (
     <div className="space-y-4">
@@ -96,12 +100,35 @@ export function ProvisionPanel({
             server.
           </li>
           <li>A release is registered; the school starts on the newest one.</li>
+          <li>
+            Telegram is set up on the worker: the first admin&apos;s password is sent there and
+            stored nowhere else.
+          </li>
         </ul>
       </div>
 
       {!busy && (
         <form action={provisionSchoolAction} className="grid gap-4 sm:grid-cols-2">
           <input type="hidden" name="schoolId" value={school.id} />
+          {!hasAdmin ? (
+            <>
+              <label className="block text-sm">
+                <span className="mb-1 block text-slate-700">First admin&apos;s name</span>
+                <input name="admin_name" required className={input} />
+              </label>
+              <label className="block text-sm">
+                <span className="mb-1 block text-slate-700">First admin&apos;s email</span>
+                <input name="admin_email" type="email" required className={input} />
+                <span className="mt-1 block text-xs text-slate-500">
+                  Their temporary password is sent to you on Telegram, not by email.
+                </span>
+              </label>
+            </>
+          ) : (
+            <p className="text-xs text-slate-500 sm:col-span-2">
+              First admin: {school.first_admin_name} ({school.first_admin_email}).
+            </p>
+          )}
           {!hasLicense ? (
             <>
               <label className="block text-sm">

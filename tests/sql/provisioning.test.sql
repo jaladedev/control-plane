@@ -22,14 +22,16 @@ end $$;
 begin;
 set local role service_role;
 
-insert into schools (slug, name, status, hostnames, license_version, license_session, license_valid_until, license_grace_until) values
-  ('newone', 'New One', 'provisioning', '{new.example.com}', 1, '2026/2027', now() + interval '30 days', now() + interval '44 days'),
-  ('nohost', 'No host', 'provisioning', '{}', 1, '2026/2027', now() + interval '30 days', now() + interval '44 days'),
-  ('nolicence', 'No licence', 'provisioning', '{nl.example.com}', 0, null, null, null),
-  ('live', 'Live', 'active', '{live.example.com}', 1, '2026/2027', now() + interval '30 days', now() + interval '44 days');
+insert into schools (slug, name, status, hostnames, license_version, license_session, license_valid_until, license_grace_until, first_admin_name, first_admin_email) values
+  ('newone', 'New One', 'provisioning', '{new.example.com}', 1, '2026/2027', now() + interval '30 days', now() + interval '44 days', 'Ada Obi', 'ada@new.example.com'),
+  ('nohost', 'No host', 'provisioning', '{}', 1, '2026/2027', now() + interval '30 days', now() + interval '44 days', 'Ada Obi', 'ada@nohost.example.com'),
+  ('noadmin', 'No admin', 'provisioning', '{na.example.com}', 1, '2026/2027', now() + interval '30 days', now() + interval '44 days', null, null),
+  ('nolicence', 'No licence', 'provisioning', '{nl.example.com}', 0, null, null, null, 'Ada Obi', 'ada@nl.example.com'),
+  ('live', 'Live', 'active', '{live.example.com}', 1, '2026/2027', now() + interval '30 days', now() + interval '44 days', null, null);
 select id as newone from schools where slug = 'newone' \gset
 select id as nohost from schools where slug = 'nohost' \gset
 select id as nolicence from schools where slug = 'nolicence' \gset
+select id as noadmin from schools where slug = 'noadmin' \gset
 select id as live from schools where slug = 'live' \gset
 
 -- ------------------------------------------------------------- queueing
@@ -40,6 +42,7 @@ select pg_temp.assert(pg_temp.err(format($q$select queue_provision(%L, 't')$q$, 
 select pg_temp.assert(pg_temp.err(format($q$select queue_provision(%L, 't')$q$, :'live')) like '%is active and is not being provisioned%', 'a live school is refused');
 select pg_temp.assert(pg_temp.err(format($q$select queue_provision(%L, 't')$q$, :'nohost')) like '%no hostname%', 'a school without a hostname is refused');
 select pg_temp.assert(pg_temp.err(format($q$select queue_provision(%L, 't')$q$, :'nolicence')) like '%no licence saved%', 'a school without a licence is refused');
+select pg_temp.assert(pg_temp.err(format($q$select queue_provision(%L, 't')$q$, :'noadmin')) like '%no first admin%', 'a school without a first admin is refused');
 select pg_temp.assert((select count(*) = 0 from jobs where type = 'provision_school'), 'a refused request queues nothing');
 
 select queue_provision(:'newone', 'owner@example.com') as j1 \gset
@@ -47,8 +50,8 @@ select pg_temp.assert((select type = 'provision_school' and status = 'queued' an
                               and school_id = :'newone'::uuid
                               and payload = jsonb_build_object('by', 'owner@example.com')
                          from jobs where id = :'j1'), 'the job is queued for that school with who asked');
-select pg_temp.assert((select count(*) = 6 and bool_and(status = 'pending') from provision_steps where school_id = :'newone'), 'six pending steps are created');
-select pg_temp.assert((select array_agg(step order by step) = array['activate','container','database','health','license','storage'] from provision_steps where school_id = :'newone'), 'the six steps are the expected ones');
+select pg_temp.assert((select count(*) = 7 and bool_and(status = 'pending') from provision_steps where school_id = :'newone'), 'seven pending steps are created');
+select pg_temp.assert((select array_agg(step order by step) = array['activate','admin','container','database','health','license','storage'] from provision_steps where school_id = :'newone'), 'the seven steps are the expected ones');
 select pg_temp.assert(pg_temp.err(format($q$select queue_provision(%L, 't')$q$, :'newone')) like '%already queued or running%', 'no second job while one is waiting');
 select pg_temp.assert(pg_temp.fails($q$insert into jobs (type) values ('provision_everything')$q$), 'the job type list is enforced');
 

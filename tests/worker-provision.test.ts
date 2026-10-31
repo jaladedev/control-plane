@@ -5,6 +5,7 @@ import type { DeployCommand, DeployOutcome } from "@/lib/deploy/client";
 import type { ProbeResult } from "@/lib/health";
 import { EnvSecrets } from "@/worker/secrets";
 import type { HandlerDeps } from "@/worker/handlers";
+import type { AuthAdmin } from "@/worker/auth-admin";
 import { handleProvisionSchool } from "@/worker/provision";
 import type { LicenseForPush, ProvisionContext } from "@/worker/store";
 import { fakeStore, job } from "@/tests/helpers/fake-store";
@@ -40,7 +41,15 @@ const mig = (version: string): RunnerMigration => ({
 });
 
 // A database that answers the runner's own queries and nothing else.
-function fakeDb(opts: { applied?: string[]; publicTables?: number; failOn?: RegExp } = {}) {
+function fakeDb(
+  opts: {
+    applied?: string[];
+    publicTables?: number;
+    failOn?: RegExp;
+    existingAdmin?: { id: string; role: string };
+    failProfile?: boolean;
+  } = {}
+) {
   const applied = [...(opts.applied ?? [])];
   const seen: string[] = [];
   const db: PgLike = {
@@ -48,6 +57,13 @@ function fakeDb(opts: { applied?: string[]; publicTables?: number; failOn?: RegE
       seen.push(text);
       if (/pg_try_advisory_lock/.test(text)) return { rows: [{ ok: true }] };
       if (/set_license/.test(text)) return { rows: [{ applied: true }] };
+      if (/from profile_contacts c join profiles p/.test(text)) {
+        return { rows: opts.existingAdmin ? [opts.existingAdmin] : [] };
+      }
+      if (/insert into profiles/.test(text)) {
+        if (opts.failProfile) throw new Error("profiles insert failed");
+        return { rows: [] };
+      }
       if (/information_schema\.tables/.test(text)) {
         return { rows: [{ n: opts.publicTables ?? 0 }] };
       }
@@ -79,6 +95,8 @@ const context = (
     hostnames: ["green.example.com"],
     supabase_project_ref: "abcdefgh",
     r2_bucket: "greenfield-files",
+    first_admin_name: "Ada Obi",
+    first_admin_email: "Ada@Greenfield.example.com",
     ...over.school,
   },
   release: "release" in over ? over.release! : { seq: 1, image_tag: TAG },
@@ -127,6 +145,8 @@ type Setup = {
   probe?: () => Promise<ProbeResult>;
   storage?: HandlerDeps["checkStorage"];
   lic?: LicenseForPush | null;
+  auth?: Partial<AuthAdmin>;
+  noTelegram?: boolean;
 };
 
 function setup(s: Setup = {}) {
@@ -145,7 +165,10 @@ function setup(s: Setup = {}) {
   const checkStorage = vi.fn(s.storage ?? (async () => ({ ok: true as const })));
   const sleep = vi.fn(async () => {});
   const connect = vi.fn(async () => ({ db: db.db, close: async () => {} }));
-  const send = vi.fn(async () => {});
+  const send = vi.fn(async (_text: string) => {});
+  const createUser = vi.fn(async () => ({ ok: true as const, id: "user-1" }));
+  const deleteUser = vi.fn(async () => {});
+  const authAdmin: AuthAdmin = { createUser, deleteUser, ...s.auth };
   const deps: HandlerDeps = {
     store,
     secrets,
@@ -158,9 +181,22 @@ function setup(s: Setup = {}) {
     checkStorage,
     sleep,
     healthAttempts: 3,
-    telegram: { send },
+    telegram: s.noTelegram ? undefined : { send },
+    authAdmin,
   };
-  return { store, deps, db, deploy, probe, checkStorage, sleep, connect, send };
+  return {
+    store,
+    deps,
+    db,
+    deploy,
+    probe,
+    checkStorage,
+    sleep,
+    connect,
+    send,
+    createUser,
+    deleteUser,
+  };
 }
 
 const run = (deps: HandlerDeps) =>
@@ -188,6 +224,8 @@ describe("provisioning: the whole way", () => {
       "container:succeeded",
       "license:running",
       "license:succeeded",
+      "admin:running",
+      "admin:succeeded",
       "health:running",
       "health:succeeded",
       "activate:running",
@@ -410,6 +448,90 @@ describe("provisioning: each step can fail, and stops everything after it", () =
   });
 });
 
+describe("provisioning: the first admin", () => {
+  it("creates the login and the profile rows, and sends the password only on Telegram", async () => {
+    const t = setup();
+    const out = await run(t.deps);
+    expect(out.ok).toBe(true);
+    expect(t.createUser).toHaveBeenCalledWith(
+      { url: APP_ENV.SUPABASE_URL, serviceRoleKey: APP_ENV.SUPABASE_SERVICE_ROLE_KEY },
+      {
+        email: "ada@greenfield.example.com",
+        password: expect.stringMatching(/^[a-z]+(-[a-z]+){3}-\d{3}$/),
+      }
+    );
+    const password = (t.createUser.mock.calls[0] as unknown as [unknown, { password: string }])[1]
+      .password;
+    const message = t.send.mock.calls
+      .map((c) => c[0])
+      .find((m) => m.includes("Temporary password"));
+    expect(message).toContain(password);
+    expect(message).toContain("ada@greenfield.example.com");
+    expect(JSON.stringify(out)).not.toContain(password);
+    expect(JSON.stringify(t.store.provisioning)).not.toContain(password);
+    expect(t.db.seen.some((q) => /insert into profiles/.test(q) && /'admin'/.test(q))).toBe(true);
+    expect(t.db.seen.some((q) => /insert into profile_contacts/.test(q))).toBe(true);
+  });
+
+  it("refuses without Telegram, before creating anything", async () => {
+    const t = setup({ noTelegram: true });
+    const out = await run(t.deps);
+    expect(out).toMatchObject({ ok: false, error: /admin: Telegram is not set up/ });
+    expect(t.createUser).not.toHaveBeenCalled();
+    expect(t.probe).not.toHaveBeenCalled();
+  });
+
+  it("refuses a school with no first admin saved", async () => {
+    const t = setup({ ctx: context({ school: { first_admin_email: null } }) });
+    expect(await run(t.deps)).toMatchObject({ ok: false, error: /no first admin/ });
+    expect(t.createUser).not.toHaveBeenCalled();
+  });
+
+  it("does not make a second login when the admin already exists (a resume)", async () => {
+    const t = setup({ db: fakeDb({ existingAdmin: { id: "u", role: "admin" } }) });
+    const out = await run(t.deps);
+    expect(out.ok).toBe(true);
+    expect(t.createUser).not.toHaveBeenCalled();
+    expect(t.send.mock.calls.some((c) => /Temporary password/.test(c[0]))).toBe(false);
+  });
+
+  it("refuses an email that already belongs to someone who is not an admin", async () => {
+    const t = setup({ db: fakeDb({ existingAdmin: { id: "u", role: "teacher" } }) });
+    expect(await run(t.deps)).toMatchObject({ ok: false, error: /not an admin/ });
+    expect(t.createUser).not.toHaveBeenCalled();
+  });
+
+  it("reports a login the school's Auth refused", async () => {
+    const t = setup({
+      auth: { createUser: async () => ({ ok: false, error: "email rate limit" }) },
+    });
+    expect(await run(t.deps)).toMatchObject({
+      ok: false,
+      error: /Could not create the login: email rate limit/,
+    });
+  });
+
+  it("removes everything it made when the password cannot be delivered", async () => {
+    const t = setup();
+    t.send.mockImplementation(async (text: string) => {
+      if (/Temporary password/.test(text)) throw new Error("telegram down");
+    });
+    const out = await run(t.deps);
+    expect(out).toMatchObject({ ok: false, error: /not kept.*telegram down.*Resume starts clean/ });
+    expect(t.deleteUser).toHaveBeenCalledWith(expect.anything(), "user-1");
+    expect(t.db.seen.some((q) => /delete from profiles/.test(q))).toBe(true);
+    expect(t.probe).not.toHaveBeenCalled();
+  });
+
+  it("removes the login when the profile rows cannot be written", async () => {
+    const t = setup({ db: fakeDb({ failProfile: true }) });
+    const out = await run(t.deps);
+    expect(out).toMatchObject({ ok: false, error: /not kept.*profiles insert failed/ });
+    expect(t.deleteUser).toHaveBeenCalledWith(expect.anything(), "user-1");
+    expect(t.send.mock.calls.some((c) => /Temporary password/.test(c[0]))).toBe(false);
+  });
+});
+
 describe("provisioning: the health check", () => {
   it("tries again while DNS and the certificate settle", async () => {
     let calls = 0;
@@ -461,7 +583,10 @@ describe("provisioning: unexpected trouble", () => {
 
   it("does not let a failing Telegram notice change the outcome", async () => {
     const t = setup();
-    t.send.mockRejectedValue(new Error("telegram down"));
+    // Only the "is live" notice fails; the password message (a real step) is not this case.
+    t.send.mockImplementation(async (text: string) => {
+      if (/is live/.test(text)) throw new Error("telegram down");
+    });
     expect((await run(t.deps)).ok).toBe(true);
   });
 
