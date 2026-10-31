@@ -39,6 +39,7 @@ describe("tick", () => {
       "register_release",
       "license_push",
       "telegram_notify",
+      "provision_school",
     ]);
   });
 
@@ -286,5 +287,22 @@ describe("runWorker", () => {
     });
     expect(n).toBe(2);
     expect(logs.some((l) => /worker loop error: claim failed/.test(l))).toBe(true);
+  });
+});
+
+describe("tick: provisioning", () => {
+  it("hands a provision_school job to the provisioning handler", async () => {
+    const store = fakeStore({
+      claimJob: vi.fn(async () => job({ type: "provision_school", payload: {}, school_id: null })),
+    });
+    await tick(workerDeps(store));
+    // The handler refuses a job with no school; that proves it was the one called.
+    expect(store.finishJob).toHaveBeenCalledWith(
+      "job-1",
+      "w1",
+      false,
+      null,
+      "The job has no school."
+    );
   });
 });

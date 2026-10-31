@@ -4,6 +4,7 @@ import { makeConnect } from "@/worker/connect";
 import { loadWorkerEnv } from "@/worker/env";
 import { ToolsBackupProvider } from "@/worker/backup";
 import { EnvSecrets } from "@/worker/secrets";
+import { makeStorageCheck } from "@/worker/storage-check";
 import { fetchMigrationsAtCommit } from "@/lib/github-migrations";
 import { sendTelegram } from "@/lib/billing/telegram";
 import { SupabaseStore } from "@/worker/store";
@@ -15,7 +16,7 @@ import { runWorker } from "@/worker/run";
 
 async function main() {
   const env = loadWorkerEnv();
-  const secrets = new EnvSecrets(env.SCHOOL_DB_URLS);
+  const secrets = new EnvSecrets(env.SCHOOL_DB_URLS, env.SCHOOL_APP_ENVS);
   const log = (message: string) =>
     console.log(`${new Date().toISOString()} ${secrets.redact(message)}`);
   if (!env.SCHOOL_DB_CA_FILE) {
@@ -64,6 +65,7 @@ async function main() {
         timeoutMs: env.BACKUP_TIMEOUT_MINUTES * 60_000,
       }),
       backupKeep: env.BACKUP_KEEP,
+      checkStorage: makeStorageCheck(),
       fetchMigrations: env.GITHUB_TOKEN
         ? (sha) =>
             fetchMigrationsAtCommit({ repo: env.SCHOOL_APP_REPO, sha, token: env.GITHUB_TOKEN! })

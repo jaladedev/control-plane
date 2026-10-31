@@ -9,9 +9,14 @@ import { spawn } from "node:child_process";
 const SLUG = /^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/;
 const TAG = /^[0-9a-f]{40}$/;
 const WORD = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+// The same pattern the script applies to each hostname it is given.
+const HOSTNAME = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
 
 export type DeployCommand =
-  { action: "deploy"; slug: string; tag: string } | { action: "rollback" | "status"; slug: string };
+  | { action: "deploy"; slug: string; tag: string }
+  // The env file text goes to the server on stdin, never on the command line.
+  | { action: "create"; slug: string; tag: string; hostnames: string[]; env: string }
+  | { action: "rollback" | "status" | "remove"; slug: string };
 
 export type DeployConfig = {
   host: string;
@@ -23,7 +28,7 @@ export type DeployConfig = {
 };
 
 export type ExecResult = { code: number | null; stdout: string; stderr: string; timedOut: boolean };
-export type Exec = (args: string[], timeoutMs: number) => Promise<ExecResult>;
+export type Exec = (args: string[], timeoutMs: number, stdin?: string) => Promise<ExecResult>;
 
 export type DeployOutcome = {
   ok: boolean;
@@ -45,9 +50,16 @@ const EXIT_MESSAGES: Record<number, string> = {
   15: "The image could not be pulled; nothing changed.",
 };
 
-export const sshExec: Exec = (args, timeoutMs) =>
+export const sshExec: Exec = (args, timeoutMs, stdin) =>
   new Promise((resolve) => {
-    const child = spawn("ssh", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("ssh", args, {
+      stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+    });
+    if (stdin !== undefined) {
+      // The server may answer and hang up before reading it all; that is not an error here.
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(stdin);
+    }
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -55,8 +67,8 @@ export const sshExec: Exec = (args, timeoutMs) =>
       timedOut = true;
       child.kill("SIGKILL");
     }, timeoutMs);
-    child.stdout.on("data", (d) => (stdout = (stdout + d).slice(-20_000)));
-    child.stderr.on("data", (d) => (stderr = (stderr + d).slice(-20_000)));
+    child.stdout?.on("data", (d) => (stdout = (stdout + d).slice(-20_000)));
+    child.stderr?.on("data", (d) => (stderr = (stderr + d).slice(-20_000)));
     child.on("error", (e) => {
       clearTimeout(timer);
       resolve({ code: null, stdout, stderr: `${stderr}${e.message}`, timedOut });
@@ -100,7 +112,15 @@ export function commandLine(cmd: DeployCommand): string {
     if (!TAG.test(cmd.tag)) throw new Error("Tag must be a full 40-character commit hash.");
     return `deploy ${cmd.slug} ${cmd.tag}`;
   }
-  if (cmd.action !== "rollback" && cmd.action !== "status")
+  if (cmd.action === "create") {
+    if (!TAG.test(cmd.tag)) throw new Error("Tag must be a full 40-character commit hash.");
+    if (cmd.hostnames.length < 1 || cmd.hostnames.length > 5) {
+      throw new Error("A school needs 1 to 5 hostnames.");
+    }
+    if (!cmd.hostnames.every((h) => HOSTNAME.test(h))) throw new Error("Bad hostname.");
+    return `create ${cmd.slug} ${cmd.tag} ${cmd.hostnames.join(" ")}`;
+  }
+  if (cmd.action !== "rollback" && cmd.action !== "status" && cmd.action !== "remove")
     throw new Error("Unknown deploy action.");
   return `${cmd.action} ${cmd.slug}`;
 }
@@ -124,7 +144,11 @@ export async function runDeployCommand(
 ): Promise<DeployOutcome> {
   const args = buildSshArgs(cfg, commandLine(cmd));
   const timeoutMs = cfg.timeoutMs ?? 6 * 60_000;
-  const res = await (cfg.exec ?? sshExec)(args, timeoutMs);
+  const res = await (cfg.exec ?? sshExec)(
+    args,
+    timeoutMs,
+    cmd.action === "create" ? cmd.env : undefined
+  );
 
   if (res.timedOut) {
     return {
@@ -139,7 +163,12 @@ export async function runDeployCommand(
   if (res.code === 0 && result && ["ok", "running", "stopped"].includes(result.status)) {
     return { ok: true, code: 0, status: result.status, tag: result.tag, message: "" };
   }
-  const known = res.code !== null ? EXIT_MESSAGES[res.code] : undefined;
+  const known =
+    res.code === 3 && cmd.action === "create"
+      ? "The server already has a school with this slug."
+      : res.code !== null
+        ? EXIT_MESSAGES[res.code]
+        : undefined;
   const detail =
     known ??
     (res.code === 255

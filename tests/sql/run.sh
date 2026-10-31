@@ -41,3 +41,4 @@ run_suite tests/sql/m4c.test.sql
 run_suite tests/sql/m2b.test.sql
 run_suite tests/sql/m5.test.sql
 run_suite tests/sql/m6.test.sql
+run_suite tests/sql/provisioning.test.sql

@@ -1,6 +1,13 @@
 import { vi } from "vitest";
 import type { RunnerMigration } from "@/lib/migrate/runner";
-import type { BackupRow, Job, SchoolPatch, Store, StepContext } from "@/worker/store";
+import type {
+  BackupRow,
+  Job,
+  ProvisionContext,
+  SchoolPatch,
+  Store,
+  StepContext,
+} from "@/worker/store";
 
 // An in-memory Store: records every call so tests can assert on order and
 // content. State machine rules are tested in SQL, not here.
@@ -18,14 +25,18 @@ export function fakeStore(overrides: Partial<Store> = {}) {
     error?: string;
   }[] = [];
 
+  const provisioning: { step: string; status: string; detail: string | null }[] = [];
+
   const store: Store & {
     calls: string[];
+    provisioning: typeof provisioning;
     patches: SchoolPatch[];
     runs: typeof runs;
     completions: typeof completions;
     backups: typeof backups;
   } = {
     calls,
+    provisioning,
     patches,
     runs,
     completions,
@@ -83,6 +94,12 @@ export function fakeStore(overrides: Partial<Store> = {}) {
     schoolForAction: vi.fn(async () => null),
     registryRows: vi.fn(async () => []),
     registerRelease: vi.fn(async () => {}),
+    provisionContext: vi.fn(async (): Promise<ProvisionContext | null> => null),
+    recordProvisionStep: vi.fn(async (_school, step, status, detail) => {
+      note("recordProvisionStep");
+      provisioning.push({ step, status, detail });
+    }),
+    activateSchool: vi.fn(async () => true),
     ...overrides,
   };
   return store;

@@ -6,6 +6,7 @@ import { ZodError } from "zod";
 import { createSchool, setSchoolStatus, updateSchool } from "@/lib/actions/schools";
 import { pushLicense, revokeLicense, setLicense } from "@/lib/actions/license";
 import { createSupportLink } from "@/lib/actions/support";
+import { startProvisioning } from "@/lib/actions/provision";
 
 // Form actions for the schools screens: each does its work through the guarded
 // functions in lib/actions/schools.ts and comes back with ?ok or ?error=<text>.
@@ -86,6 +87,18 @@ export async function revokeLicenseAction(formData: FormData) {
   revalidatePath("/");
   revalidatePath(`/schools/${id}`);
   redirect(`/schools/${id}?ok=revoked`);
+}
+
+export async function provisionSchoolAction(formData: FormData) {
+  const id = String(formData.get("schoolId") ?? "");
+  try {
+    await startProvisioning(id, fields(formData));
+  } catch (error) {
+    redirect(`/schools/${encodeURIComponent(id)}?error=${encodeURIComponent(message(error))}`);
+  }
+  revalidatePath("/");
+  revalidatePath(`/schools/${id}`);
+  redirect(`/schools/${id}?ok=provisioning`);
 }
 
 // Returns the link in the response body instead of redirecting, so the token

@@ -7,22 +7,35 @@ import { z } from "zod";
 
 export interface SecretsProvider {
   schoolDatabaseUrl(slug: string): Promise<string>;
+  /** The settings for a school's container (its project, bucket and keys), or undefined. */
+  schoolAppEnv(slug: string): Promise<Record<string, string> | undefined>;
   /** Replaces anything secret in a message so it can be stored or logged. */
   redact(text: string): string;
 }
 
 const urlsSchema = z.record(z.string(), z.string().min(1));
+const appEnvsSchema = z.record(z.string(), z.record(z.string(), z.string()));
 
 export class EnvSecrets implements SecretsProvider {
   private readonly urls: Record<string, string>;
+  private readonly appEnvs: Record<string, Record<string, string>>;
 
-  constructor(raw: string | undefined) {
+  constructor(raw: string | undefined, rawAppEnvs?: string) {
     if (!raw) throw new Error("SCHOOL_DB_URLS is not set in the worker's environment.");
     try {
       this.urls = urlsSchema.parse(JSON.parse(raw));
     } catch {
       throw new Error('SCHOOL_DB_URLS must be JSON like {"slug":"postgres://..."}.');
     }
+    try {
+      this.appEnvs = rawAppEnvs ? appEnvsSchema.parse(JSON.parse(rawAppEnvs)) : {};
+    } catch {
+      throw new Error('SCHOOL_APP_ENVS must be JSON like {"slug":{"SUPABASE_URL":"https://..."}}.');
+    }
+  }
+
+  async schoolAppEnv(slug: string) {
+    return this.appEnvs[slug];
   }
 
   async schoolDatabaseUrl(slug: string): Promise<string> {
@@ -33,6 +46,13 @@ export class EnvSecrets implements SecretsProvider {
 
   redact(text: string): string {
     let out = text;
+    // Every value in a school's container settings is treated as secret, longest
+    // first so a value that contains another is replaced whole.
+    const values = Object.values(this.appEnvs)
+      .flatMap((env) => Object.values(env))
+      .filter((v) => v.length >= 8)
+      .sort((a, b) => b.length - a.length);
+    for (const value of values) out = out.split(value).join("[secret]");
     for (const url of Object.values(this.urls)) {
       out = out.split(url).join("[database url]");
       try {

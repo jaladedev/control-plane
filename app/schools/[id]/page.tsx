@@ -8,6 +8,7 @@ import { SchoolForm } from "@/components/SchoolForm";
 import { LicenseForm } from "@/components/LicenseForm";
 import { SupportLink } from "@/components/SupportLink";
 import { SigningKeys } from "@/components/SigningKeys";
+import { ProvisionPanel } from "@/components/ProvisionPanel";
 import { HealthBadge, LicenseBadge, ago } from "@/components/badges";
 import { setStatusAction, updateSchoolAction } from "@/app/schools/actions";
 
@@ -18,6 +19,7 @@ const OK: Record<string, string> = {
   licensed: "Licence saved and delivered to the school.",
   pushed: "Licence delivered to the school.",
   revoked: "Licence revoked. The school is now read-only.",
+  provisioning: "Provisioning queued. Each step shows below as the worker does it.",
   key_added: "Claim key added.",
   key_revoked: "Claim key revoked. The school can no longer sign claims with it.",
 };
@@ -67,6 +69,28 @@ export default async function SchoolPage({
       ).data ?? [])
     : [];
 
+  const provisioning = isOwner && school.status === "provisioning";
+  const provisionSteps = provisioning
+    ? ((
+        await supabase
+          .from("provision_steps")
+          .select("step, status, detail")
+          .eq("school_id", school.id)
+      ).data ?? [])
+    : [];
+  const provisionJob = provisioning
+    ? ((
+        await supabase
+          .from("jobs")
+          .select("status, error, created_at")
+          .eq("school_id", school.id)
+          .eq("type", "provision_school")
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle()
+      ).data ?? null)
+    : null;
+
   return (
     <div className="space-y-8">
       <div>
@@ -115,6 +139,13 @@ export default async function SchoolPage({
           </p>
         </div>
       </section>
+
+      {provisioning && (
+        <section className="space-y-3">
+          <h2 className="font-semibold">Provision this school</h2>
+          <ProvisionPanel school={school} steps={provisionSteps} job={provisionJob} />
+        </section>
+      )}
 
       {canLicense && (
         <section className="space-y-3">

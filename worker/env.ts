@@ -9,6 +9,9 @@ const schema = z.object({
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   SCHOOL_DB_URLS: z.string().min(2),
+  // Per school, the settings its container starts with (its Supabase project, R2
+  // bucket and keys, signing secret). Only needed to provision a new school.
+  SCHOOL_APP_ENVS: z.string().optional(),
   SCHOOL_DB_CA_FILE: z.string().optional(),
   DEPLOY_SSH_HOST: z.string().min(1),
   DEPLOY_SSH_USER: z.string().default("root"),

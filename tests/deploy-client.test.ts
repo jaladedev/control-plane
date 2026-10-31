@@ -48,7 +48,9 @@ describe("commandLine", () => {
   );
 
   it("refuses an unknown action", () => {
-    expect(() => commandLine({ action: "remove", slug: "greenfield" } as never)).toThrow(/Unknown/);
+    expect(() => commandLine({ action: "restart", slug: "greenfield" } as never)).toThrow(
+      /Unknown/
+    );
   });
 });
 

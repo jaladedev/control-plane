@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { RunnerMigration } from "@/lib/migrate/runner";
+import type { ProvisionStatus, ProvisionStep } from "@/lib/provision/steps";
 
 // Everything the worker reads and writes in the control-plane database,
 // behind one interface so the handlers can be tested without a database. The
@@ -68,6 +69,20 @@ export type SchoolPatch = Partial<{
 
 export type BackupRow = { id: string; object_key: string };
 
+export type ProvisionContext = {
+  school: {
+    id: string;
+    slug: string;
+    status: string;
+    hostnames: string[];
+    supabase_project_ref: string | null;
+    r2_bucket: string | null;
+  };
+  /** The newest registered release: the image and migrations a new school starts on. */
+  release: { seq: number; image_tag: string } | null;
+  steps: Partial<Record<ProvisionStep, ProvisionStatus>>;
+};
+
 export interface Store {
   claimJob(worker: string, types: string[]): Promise<Job | null>;
   touchJob(jobId: string, worker: string): Promise<boolean>;
@@ -119,6 +134,21 @@ export interface Store {
   schoolForAction(schoolId: string): Promise<SchoolForAction | null>;
   registryRows(): Promise<{ version: string; name: string; checksum: string }[]>;
   registerRelease(args: RegisterReleaseArgs): Promise<void>;
+
+  provisionContext(schoolId: string): Promise<ProvisionContext | null>;
+  recordProvisionStep(
+    schoolId: string,
+    step: ProvisionStep,
+    status: Exclude<ProvisionStatus, "pending">,
+    detail: string | null
+  ): Promise<void>;
+  /** Flips the school to active (audited in the database). False when it already was. */
+  activateSchool(
+    schoolId: string,
+    tag: string,
+    schemaVersion: string | null,
+    by: string
+  ): Promise<boolean>;
 }
 
 export type SchoolForAction = {
@@ -504,5 +534,68 @@ export class SupabaseStore implements Store {
       "suspend_lapsed_schools"
     ) as { slug: string; grace_until: string }[];
     return rows.map((r) => ({ slug: r.slug, graceUntil: r.grace_until }));
+  }
+
+  async provisionContext(schoolId: string): Promise<ProvisionContext | null> {
+    const school = check(
+      await this.db
+        .from("schools")
+        .select("id, slug, status, hostnames, supabase_project_ref, r2_bucket")
+        .eq("id", schoolId)
+        .maybeSingle(),
+      "load school"
+    );
+    if (!school) return null;
+    const release = check(
+      await this.db
+        .from("releases")
+        .select("seq, image_tag")
+        .order("seq", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      "load latest release"
+    );
+    const rows = need(
+      await this.db.from("provision_steps").select("step, status").eq("school_id", schoolId),
+      "load provision steps"
+    ) as { step: ProvisionStep; status: ProvisionStatus }[];
+    const steps: ProvisionContext["steps"] = {};
+    for (const r of rows) steps[r.step] = r.status;
+    return {
+      school: { ...school, hostnames: school.hostnames ?? [] },
+      release: release ? { seq: Number(release.seq), image_tag: release.image_tag } : null,
+      steps,
+    };
+  }
+
+  async recordProvisionStep(
+    schoolId: string,
+    step: ProvisionStep,
+    status: Exclude<ProvisionStatus, "pending">,
+    detail: string | null
+  ) {
+    check(
+      await this.db.rpc("record_provision_step", {
+        p_school: schoolId,
+        p_step: step,
+        p_status: status,
+        p_detail: detail,
+      }),
+      "record_provision_step"
+    );
+  }
+
+  async activateSchool(schoolId: string, tag: string, schemaVersion: string | null, by: string) {
+    return (
+      check(
+        await this.db.rpc("activate_provisioned_school", {
+          p_school: schoolId,
+          p_tag: tag,
+          p_schema_version: schemaVersion,
+          p_by: by,
+        }),
+        "activate_provisioned_school"
+      ) === true
+    );
   }
 }

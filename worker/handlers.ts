@@ -13,6 +13,7 @@ import { claimNotice } from "@/lib/billing/telegram";
 import type { Job, SchoolPatch, Store } from "@/worker/store";
 import type { SecretsProvider } from "@/worker/secrets";
 import { decideBackup, type BackupProvider } from "@/worker/backup";
+import type { StorageCheck } from "@/worker/storage-check";
 
 // What the worker does for each kind of job. All I/O comes in through
 // HandlerDeps, so these are tested with fakes; the real wiring is in
@@ -34,6 +35,12 @@ export type HandlerDeps = {
   log: (message: string) => void;
   /** Reads a commit's migration files from GitHub. Absent when the worker has no GITHUB_TOKEN. */
   fetchMigrations?: (tag: string) => Promise<{ name: string; content: string }[]>;
+  /** Checks a school's R2 bucket and key. Absent in tests that do not provision. */
+  checkStorage?: StorageCheck;
+  /** Waits; replaced in tests so the health step does not really wait. */
+  sleep?: (ms: number) => Promise<void>;
+  /** How often provisioning probes the school's public address before giving up. */
+  healthAttempts?: number;
   /** Sends a Telegram message. Absent when the worker has no bot configured. */
   telegram?: { send: (text: string) => Promise<void>; appUrl?: string | null };
 };

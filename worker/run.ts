@@ -8,6 +8,7 @@ import {
   handleSchoolRollback,
   type HandlerResult,
 } from "@/worker/handlers";
+import { handleProvisionSchool } from "@/worker/provision";
 
 // The worker loop. A job is claimed (SKIP LOCKED in SQL), kept alive with a
 // heartbeat while it runs, and finished. A job that raises an unexpected error
@@ -23,6 +24,7 @@ export const JOB_TYPES = [
   "register_release",
   "license_push",
   "telegram_notify",
+  "provision_school",
 ];
 
 /** Processes at most one job. Returns false when the queue was empty. */
@@ -44,6 +46,7 @@ export async function tick(deps: WorkerDeps): Promise<boolean> {
     else if (job.type === "register_release") out = await handleRegisterRelease(job, deps);
     else if (job.type === "license_push") out = await handleLicensePush(job, deps);
     else if (job.type === "telegram_notify") out = await handleTelegramNotify(job, deps);
+    else if (job.type === "provision_school") out = await handleProvisionSchool(job, deps);
     else out = { ok: false, error: `Unknown job type ${job.type}.` };
     await store.finishJob(job.id, workerId, out.ok, out.result ?? null, out.error ?? null);
     log(`job ${job.id} ${out.ok ? "succeeded" : `failed: ${out.error}`}`);
