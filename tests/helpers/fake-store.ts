@@ -94,6 +94,7 @@ export function fakeStore(overrides: Partial<Store> = {}) {
     schoolForAction: vi.fn(async () => null),
     registryRows: vi.fn(async () => []),
     registerRelease: vi.fn(async () => {}),
+    activeSigningKeys: vi.fn(async () => []),
     provisionContext: vi.fn(async (): Promise<ProvisionContext | null> => null),
     recordProvisionStep: vi.fn(async (_school, step, status, detail) => {
       note("recordProvisionStep");

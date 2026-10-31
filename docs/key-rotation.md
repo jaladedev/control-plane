@@ -39,7 +39,9 @@ One attempt only: a failed apply is never retried by itself.
   the new settings but the outside check failed (usually a service role key that does not work). The old
   settings are **not** restored automatically. Put the previous values back in `SCHOOL_APP_ENVS`,
   restart the worker, apply again, and only then investigate.
-- **"Nothing was changed."** The new R2 key was refused before any restart. The school is untouched.
+- **"Nothing was changed."** A check failed before any restart (an R2 key that is refused, or a claim key
+  whose public half is not registered). The school is untouched. For the claim key, add the public key under
+  **Payment claim keys**, then apply again.
 
 ## What is and is not verified
 

@@ -137,6 +137,9 @@ export interface Store {
   registryRows(): Promise<{ version: string; name: string; checksum: string }[]>;
   registerRelease(args: RegisterReleaseArgs): Promise<void>;
 
+  /** The public keys the school's payment claims are checked against (not revoked). */
+  activeSigningKeys(schoolId: string): Promise<string[]>;
+
   provisionContext(schoolId: string): Promise<ProvisionContext | null>;
   recordProvisionStep(
     schoolId: string,
@@ -536,6 +539,18 @@ export class SupabaseStore implements Store {
       "suspend_lapsed_schools"
     ) as { slug: string; grace_until: string }[];
     return rows.map((r) => ({ slug: r.slug, graceUntil: r.grace_until }));
+  }
+
+  async activeSigningKeys(schoolId: string): Promise<string[]> {
+    const rows = need(
+      await this.db
+        .from("school_signing_keys")
+        .select("public_key")
+        .eq("school_id", schoolId)
+        .is("revoked_at", null),
+      "load signing keys"
+    ) as { public_key: string }[];
+    return rows.map((r) => r.public_key);
   }
 
   async provisionContext(schoolId: string): Promise<ProvisionContext | null> {

@@ -1,4 +1,5 @@
 import { buildSchoolEnvFile } from "@/lib/provision/env";
+import { publicKeyFromClaimSeed } from "@/lib/provision/claim-key";
 import type { HandlerDeps, HandlerResult } from "@/worker/handlers";
 import type { Job } from "@/worker/store";
 
@@ -44,6 +45,25 @@ export async function handleReconfigureSchool(job: Job, deps: HandlerDeps): Prom
       r2Bucket: school.r2_bucket,
     });
     if (!built.ok) throw new Refused(`The settings are not ready: ${built.errors.join(" ")}`);
+
+    // 1b. A claim-signing key must be one the control plane will accept, or the school's
+    //     payment claims are refused (401) the moment it restarts on it. Its public half
+    //     has to be registered and active first (docs/key-rotation.md, "Payment claim key").
+    const seed = values?.CLAIM_SIGNING_KEY;
+    if (seed) {
+      const pub = publicKeyFromClaimSeed(seed);
+      if (!pub) {
+        throw new Refused(
+          "CLAIM_SIGNING_KEY is not a valid 43-character private key (npm run claim-key). Nothing was changed."
+        );
+      }
+      if (!(await store.activeSigningKeys(school.id)).includes(pub)) {
+        throw new Refused(
+          `The public key for CLAIM_SIGNING_KEY (${pub}) is not registered and active for ${school.slug}. ` +
+            'Add it under "Payment claim keys" first. Nothing was changed.'
+        );
+      }
+    }
 
     // 2. A new R2 key is proved before the container is restarted on it.
     if (!deps.checkStorage) throw new Refused("The worker has no storage check configured.");

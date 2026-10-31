@@ -1,3 +1,4 @@
+import { generateKeyPairSync } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DeployCommand, DeployOutcome } from "@/lib/deploy/client";
 import type { ProbeResult } from "@/lib/health";
@@ -114,6 +115,15 @@ const run = (deps: HandlerDeps) =>
 const actions = (t: ReturnType<typeof setup>) => t.deploy.mock.calls.map((c) => c[0].action);
 
 beforeEach(() => vi.clearAllMocks());
+
+// A real claim key pair, in the encoding npm run claim-key prints.
+function claimKey() {
+  const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+  return {
+    seed: privateKey.export({ format: "der", type: "pkcs8" }).subarray(-32).toString("base64url"),
+    pub: publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("base64url"),
+  };
+}
 
 describe("applying settings to a running school", () => {
   it("checks, confirms with the server, applies on the same tag, then probes", async () => {
@@ -293,5 +303,64 @@ describe("applying settings to a running school", () => {
     const t = setup();
     t.send.mockRejectedValue(new Error("telegram down"));
     expect((await run(t.deps)).ok).toBe(true);
+  });
+});
+
+describe("a new claim-signing key", () => {
+  const withKey = (seed: string) => ({
+    ...APP_ENV,
+    CONTROL_PLANE_URL: "https://dash.example.com",
+    CLAIM_SIGNING_KEY: seed,
+  });
+
+  it("is applied once its public key is registered and active", async () => {
+    const k = claimKey();
+    const t = setup({ settings: withKey(k.seed) });
+    vi.mocked(t.store.activeSigningKeys).mockResolvedValue(["some-old-key", k.pub]);
+    const out = await run(t.deps);
+    expect(out.ok).toBe(true);
+    expect(t.store.activeSigningKeys).toHaveBeenCalledWith("school-1");
+    expect(actions(t)).toEqual(["status", "reconfigure"]);
+  });
+
+  it("is refused, with nothing changed, when its public key is not registered", async () => {
+    const k = claimKey();
+    const t = setup({ settings: withKey(k.seed) });
+    vi.mocked(t.store.activeSigningKeys).mockResolvedValue(["some-old-key"]);
+    const out = await run(t.deps);
+    expect(out.ok).toBe(false);
+    expect(out.error).toContain(k.pub);
+    expect(out.error).toContain("Payment claim keys");
+    expect(out.error).toContain("Nothing was changed");
+    expect(out.error).not.toContain(k.seed);
+    expect(t.checkStorage).not.toHaveBeenCalled();
+    expect(t.deploy).not.toHaveBeenCalled();
+  });
+
+  it("is refused when its public key was revoked (only active keys count)", async () => {
+    const k = claimKey();
+    const t = setup({ settings: withKey(k.seed) });
+    vi.mocked(t.store.activeSigningKeys).mockResolvedValue([]);
+    expect((await run(t.deps)).ok).toBe(false);
+    expect(t.deploy).not.toHaveBeenCalled();
+  });
+
+  it.each([["too short"], ["!".repeat(43)], ["A".repeat(44)]])(
+    "is refused when it is not a valid private key (%s)",
+    async (seed) => {
+      const t = setup({ settings: withKey(seed) });
+      const out = await run(t.deps);
+      expect(out.ok).toBe(false);
+      expect(out.error).toContain("not a valid 43-character private key");
+      expect(out.error).not.toContain(seed);
+      expect(t.store.activeSigningKeys).not.toHaveBeenCalled();
+      expect(t.deploy).not.toHaveBeenCalled();
+    }
+  );
+
+  it("is not looked up at all when the school has no claim key", async () => {
+    const t = setup();
+    await run(t.deps);
+    expect(t.store.activeSigningKeys).not.toHaveBeenCalled();
   });
 });
