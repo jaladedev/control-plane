@@ -26,7 +26,7 @@ export function claimNotice(n: ClaimNotice): string {
     head,
     `School: ${clean(n.schoolName)}`,
     `Amount: ${formatNaira(n.amountKobo)}`,
-    `Invoice: ${n.reference} (${clean(n.session)})`,
+    `${n.reference.startsWith("TOP-") ? "Top-up" : "Invoice"}: ${n.reference} (${clean(n.session)})`,
     `Sent on: ${n.sentOn}`,
     "Check your bank statement, then confirm or reject it.",
   ];

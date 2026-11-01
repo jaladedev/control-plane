@@ -72,7 +72,7 @@ export default async function BillingPage({
     supabase
       .from("payment_claims")
       .select(
-        "id, school_id, subscription_id, amount_kobo, sent_on, sender_name, payer_reference, proof_path, claimed_by, created_at"
+        "id, school_id, subscription_id, topup_id, amount_kobo, sent_on, sender_name, payer_reference, proof_path, claimed_by, created_at"
       )
       .eq("status", "pending")
       .order("created_at", { ascending: true }),
@@ -112,6 +112,8 @@ export default async function BillingPage({
   const claims = claimsRes.data ?? [];
   const decided = decidedRes.data ?? [];
   const topups = topupsRes.data ?? [];
+  const topupById = new Map(topups.map((t) => [t.id as string, t]));
+  const claimedTopups = new Set(claims.filter((c) => c.topup_id).map((c) => c.topup_id as string));
   const reviews = reviewsRes.data ?? [];
 
   // Which reminder stages have gone out for the open invoices (RLS: any dashboard role).
@@ -160,6 +162,7 @@ export default async function BillingPage({
         {claims.length === 0 && <p className="text-sm text-slate-600">Nothing waiting.</p>}
         {claims.map((c) => {
           const sub = subById.get(c.subscription_id as string);
+          const top = c.topup_id ? topupById.get(c.topup_id as string) : undefined;
           const hours = Math.floor((Date.now() - Date.parse(c.created_at as string)) / 3_600_000);
           return (
             <div
@@ -169,10 +172,18 @@ export default async function BillingPage({
               <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
                 <span className="font-medium">{nameOf(c.school_id as string)}</span>
                 <span className="text-lg font-semibold">{formatNaira(Number(c.amount_kobo))}</span>
-                <span className="text-slate-600">
-                  invoice <code>{sub?.reference as string}</code> · {sub?.session as string} · due{" "}
-                  {formatNaira(Number(sub?.amount_kobo ?? 0))}
-                </span>
+                {top ? (
+                  <span className="text-slate-600">
+                    top-up <code>{top.reference as string}</code> · {top.extra_students as number}{" "}
+                    extra students on <code>{sub?.reference as string}</code> · due{" "}
+                    {formatNaira(Number(top.amount_kobo))}
+                  </span>
+                ) : (
+                  <span className="text-slate-600">
+                    invoice <code>{sub?.reference as string}</code> · {sub?.session as string} · due{" "}
+                    {formatNaira(Number(sub?.amount_kobo ?? 0))}
+                  </span>
+                )}
                 <span className={hours >= 48 ? "text-red-700" : "text-slate-500"}>
                   waiting {hours < 1 ? "under an hour" : `${hours} h`}
                 </span>
@@ -297,6 +308,9 @@ export default async function BillingPage({
                 <span>{t.extra_students as number} extra students</span>
                 <span>{formatNaira(Number(t.amount_kobo))}</span>
                 <span className="text-slate-500">{ago(t.created_at as string)}</span>
+                {claimedTopups.has(t.id as string) && (
+                  <span className="text-amber-700">transfer claim waiting above</span>
+                )}
               </div>
               <div className="flex flex-wrap gap-6">
                 <form action={markTopupPaidAction} className="flex flex-wrap items-end gap-2">

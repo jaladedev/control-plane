@@ -36,13 +36,25 @@ export async function POST(request: NextRequest) {
         openTopups: async (schoolId) => {
           const { data, error } = await admin
             .from("subscription_topups")
-            .select("reference, extra_students, amount_kobo, subscriptions(reference, session)")
+            .select("id, reference, extra_students, amount_kobo, subscriptions(reference, session)")
             .eq("school_id", schoolId)
             .eq("status", "pending")
             .order("created_at", { ascending: false });
           if (error) throw new Error(error.message);
+          // Which of them already have a transfer claim waiting.
+          const claims = await admin
+            .from("payment_claims")
+            .select("topup_id")
+            .eq("school_id", schoolId)
+            .eq("status", "pending")
+            .not("topup_id", "is", null);
+          if (claims.error) throw new Error(claims.error.message);
+          const claimed = new Set((claims.data ?? []).map((c) => c.topup_id as string));
           return (data ?? []).map((r) =>
-            openTopupFromRow(r as unknown as Parameters<typeof openTopupFromRow>[0])
+            openTopupFromRow(
+              r as unknown as Parameters<typeof openTopupFromRow>[0],
+              claimed.has((r as unknown as { id: string }).id)
+            )
           );
         },
         openInvoices: async (schoolId) => {

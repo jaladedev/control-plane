@@ -21,6 +21,11 @@ describe("claimNotice", () => {
     expect(text).toContain("https://dash.example.com/billing");
     expect(text).not.toContain("//billing");
   });
+  it("calls a top-up a top-up, not an invoice", () => {
+    const text = claimNotice({ ...notice, reference: "TOP-1A2B3C4D" });
+    expect(text).toContain("Top-up: TOP-1A2B3C4D (2026/2027)");
+    expect(text).not.toContain("Invoice:");
+  });
   it("says how long a reminder has waited", () => {
     expect(claimNotice({ ...notice, kind: "reminder", ageHours: 49.7 })).toContain(
       "Reminder: a transfer claim has waited 49 hours"

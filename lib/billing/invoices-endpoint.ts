@@ -50,7 +50,7 @@ export function openInvoiceFromRow(r: {
   };
 }
 
-/** Extra students invoiced on a paid invoice, waiting for payment. Payable by card. */
+/** Extra students invoiced on a paid invoice, waiting for payment. Payable by card, or by transfer with a claim. */
 export type OpenTopup = {
   reference: string;
   /** The paid invoice it belongs to. */
@@ -58,16 +58,21 @@ export type OpenTopup = {
   session: string;
   extraStudents: number;
   amountKobo: number;
+  /** A transfer claim for it is waiting for a person to check it. */
+  claimPending: boolean;
 };
 
 /** One `subscription_topups` row (with its invoice) as the open list shows it. */
-export function openTopupFromRow(r: {
-  reference: string;
-  extra_students: number;
-  amount_kobo: number | string;
-  subscriptions:
-    { reference: string; session: string } | { reference: string; session: string }[] | null;
-}): OpenTopup {
+export function openTopupFromRow(
+  r: {
+    reference: string;
+    extra_students: number;
+    amount_kobo: number | string;
+    subscriptions:
+      { reference: string; session: string } | { reference: string; session: string }[] | null;
+  },
+  claimPending = false
+): OpenTopup {
   const inv = Array.isArray(r.subscriptions) ? r.subscriptions[0] : r.subscriptions;
   return {
     reference: r.reference,
@@ -75,6 +80,7 @@ export function openTopupFromRow(r: {
     session: inv?.session ?? "",
     extraStudents: r.extra_students,
     amountKobo: Number(r.amount_kobo),
+    claimPending,
   };
 }
 
@@ -128,6 +134,7 @@ export async function handleInvoices(
         session: t.session,
         extra_students: t.extraStudents,
         amount_kobo: t.amountKobo,
+        claim_pending: t.claimPending,
       })),
       pay_to: deps.payTo,
       card_enabled: deps.cardEnabled,

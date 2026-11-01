@@ -88,6 +88,24 @@ describe("a valid signed claim", () => {
       expect.objectContaining({ amount_kobo: 15_000_000, claimed_by: "bursar@school.example" })
     );
   });
+  it("accepts a claim for a top-up, audited under its reference and passed on as such", async () => {
+    const { deps, send } = setup();
+    const raw = body({
+      subscription_reference: undefined,
+      topup_reference: "TOP-1A2B3C4D",
+      amount_kobo: 500_000,
+    });
+    expect(await send(raw)).toEqual({ status: 201, body: { ok: true, claim_id: "claim-id-1" } });
+    expect(deps.audit).toHaveBeenCalledWith("claim.submit", "school-1", {
+      reference: "TOP-1A2B3C4D",
+      client_ref: "claim-0001",
+      amount_kobo: 500_000,
+    });
+    expect(deps.submit).toHaveBeenCalledWith(
+      "school-1",
+      expect.objectContaining({ topup_reference: "TOP-1A2B3C4D", amount_kobo: 500_000 })
+    );
+  });
   it("still works for a suspended school, which is exactly who needs to pay", async () => {
     const { send } = setup({}, "suspended");
     expect((await send(body())).status).toBe(201);
@@ -170,6 +188,21 @@ describe("after authentication", () => {
     ["not JSON", "{nope", /valid JSON/],
     ["an unknown field", body({ extra: 1 }), /Unrecognized key/],
     ["a bad reference", body({ subscription_reference: "INV-1" }), /invoice reference/],
+    [
+      "a bad top-up reference",
+      body({ subscription_reference: undefined, topup_reference: "TOP-1" }),
+      /top-up reference/,
+    ],
+    [
+      "both an invoice and a top-up",
+      body({ topup_reference: "TOP-1A2B3C4D" }),
+      /either an invoice or a top-up/,
+    ],
+    [
+      "neither an invoice nor a top-up",
+      body({ subscription_reference: undefined }),
+      /either an invoice or a top-up/,
+    ],
     ["a short client_ref", body({ client_ref: "x" }), /client_ref/],
     ["a negative amount", body({ amount_kobo: -5 }), /amount_kobo/],
     ["a fractional amount", body({ amount_kobo: 10.5 }), /amount_kobo/],

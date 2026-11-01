@@ -27,9 +27,15 @@ export const CLAIM_LIMITS = {
 
 export const claimBodySchema = z
   .object({
+    // An invoice (SUB-...) or a top-up of a paid invoice (TOP-...): exactly one of the two.
     subscription_reference: z
       .string()
-      .regex(/^SUB-[0-9A-F]{8}$/, "That is not an invoice reference."),
+      .regex(/^SUB-[0-9A-F]{8}$/, "That is not an invoice reference.")
+      .optional(),
+    topup_reference: z
+      .string()
+      .regex(/^TOP-[0-9A-F]{8}$/, "That is not a top-up reference.")
+      .optional(),
     client_ref: z.string().min(8, "client_ref is too short.").max(80),
     amount_kobo: z.number().int().positive().max(1_000_000_000_000),
     sent_on: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "sent_on must be a date like 2026-10-25."),
@@ -38,14 +44,18 @@ export const claimBodySchema = z
     proof_path: z.string().max(300).optional(),
     claimed_by: z.string().trim().min(1).max(120),
   })
-  .strict();
+  .strict()
+  .refine((b) => (b.subscription_reference === undefined) !== (b.topup_reference === undefined), {
+    message: "Name either an invoice or a top-up to claim, not both.",
+    path: ["subscription_reference"],
+  });
 
 export type ClaimBody = z.infer<typeof claimBodySchema>;
 
 export type ClaimDeps = SchoolAuthDeps & {
   /** Writes the audit row first; throws if it cannot. */
   audit(action: string, schoolId: string, details: Record<string, unknown>): Promise<void>;
-  /** Calls submit_claim. `businessError` is a message the school may be shown. */
+  /** Calls submit_claim, or submit_topup_claim for a top-up. `businessError` is a message the school may be shown. */
   submit(
     schoolId: string,
     body: ClaimBody
@@ -83,7 +93,7 @@ export async function handleClaim(
   }
 
   await deps.audit("claim.submit", school.id, {
-    reference: parsed.data.subscription_reference,
+    reference: parsed.data.subscription_reference ?? parsed.data.topup_reference,
     client_ref: parsed.data.client_ref,
     amount_kobo: parsed.data.amount_kobo,
   });

@@ -96,6 +96,7 @@ describe("handleInvoices", () => {
           session: "2026/2027",
           extraStudents: 12,
           amountKobo: 60_000,
+          claimPending: true,
         },
       ]),
     });
@@ -107,6 +108,7 @@ describe("handleInvoices", () => {
         session: "2026/2027",
         extra_students: 12,
         amount_kobo: 60_000,
+        claim_pending: true,
       },
     ]);
     expect(deps.openTopups).toHaveBeenCalledWith("school-1");
@@ -120,9 +122,14 @@ describe("handleInvoices", () => {
       session: "2026/2027",
       extraStudents: 3,
       amountKobo: 30_000,
+      claimPending: false,
     };
     const inv = { reference: "SUB-0A1B2C3D", session: "2026/2027" };
     expect(openTopupFromRow({ ...row, subscriptions: inv })).toEqual(want);
+    expect(openTopupFromRow({ ...row, subscriptions: inv }, true)).toEqual({
+      ...want,
+      claimPending: true,
+    });
     expect(openTopupFromRow({ ...row, subscriptions: [inv] })).toEqual(want);
   });
 
