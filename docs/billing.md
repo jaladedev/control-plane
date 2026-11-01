@@ -199,8 +199,11 @@ school's billing contact, once per stage and invoice. The stage follows the scho
 - A school with **no billing contact email** is recorded as handled with no address, and you are
   told once on Telegram to add one under Details or contact the school yourself.
 - A failure after the email is accepted but before it is recorded can send one stage twice. The
-  email carries an idempotency key to let Resend drop the repeat; that behaviour has not been
-  checked against the live API.
+  email carries an `Idempotency-Key` (one per invoice and stage) to let Resend drop the repeat.
+  Resend's docs confirm the header on `POST /emails`: up to 256 characters, a 24-hour window, and
+  the same payload required. A repeat with a changed body, or after 24 hours, is not deduplicated
+  (the first fails visibly as a job error; the second sends again). Read from the docs, not yet
+  tried against the live API.
 - The Billing screen shows the stages sent under each open invoice.
 
 ## Invoice and receipt PDFs
