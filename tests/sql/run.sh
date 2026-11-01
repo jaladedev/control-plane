@@ -44,3 +44,4 @@ run_suite tests/sql/m6.test.sql
 run_suite tests/sql/provisioning.test.sql
 run_suite tests/sql/m6b.test.sql
 run_suite tests/sql/paystack_topups.test.sql
+run_suite tests/sql/reminders.test.sql

@@ -5,7 +5,7 @@ import { z } from "zod";
 // holds school database URLs or the deploy key, and the worker never needs the
 // browser-facing Supabase settings.
 
-const schema = z.object({
+const base = z.object({
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   SCHOOL_DB_URLS: z.string().min(2),
@@ -44,6 +44,12 @@ const schema = z.object({
   // 48-hour reminder. Without both, claim notices fail visibly (claims still queue).
   TELEGRAM_BOT_TOKEN: z.string().min(1).optional(),
   TELEGRAM_CHAT_ID: z.string().min(1).optional(),
+  // Optional: email through Resend, for invoice reminders to a school's billing contact.
+  // Both or neither. Without them a reminder job fails visibly (nothing is marked sent).
+  RESEND_API_KEY: z.string().min(1).optional(),
+  EMAIL_FROM_ADDRESS: z.string().min(3).max(300).optional(),
+  // Where replies go (you, not a no-reply address).
+  EMAIL_REPLY_TO: z.string().email().optional(),
   // Where the dashboard lives, for the link in a notice.
   APP_URL: z.string().url().optional(),
   WORKER_ID: z.string().min(1).default(`${hostname()}-${process.pid}`),
@@ -57,6 +63,11 @@ const schema = z.object({
     .refine((v) => v === 0 || (v >= 7 && v <= 365), "must be 0 (off) or 7 to 365")
     .default(90),
   SCAN_EVERY_MINUTES: z.coerce.number().int().min(5).max(1440).default(30),
+});
+
+const schema = base.refine((e) => Boolean(e.RESEND_API_KEY) === Boolean(e.EMAIL_FROM_ADDRESS), {
+  path: ["EMAIL_FROM_ADDRESS"],
+  message: "RESEND_API_KEY and EMAIL_FROM_ADDRESS must be set together, or neither.",
 });
 
 export type WorkerEnv = z.infer<typeof schema>;

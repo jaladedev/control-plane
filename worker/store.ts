@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { RunnerMigration } from "@/lib/migrate/runner";
 import type { ProvisionStatus, ProvisionStep } from "@/lib/provision/steps";
+import type { ReminderKind } from "@/lib/billing/reminder";
 
 // Everything the worker reads and writes in the control-plane database,
 // behind one interface so the handlers can be tested without a database. The
@@ -40,6 +41,25 @@ export type ClaimForNotice = {
   reference: string;
   session: string;
   school_name: string;
+};
+
+export type InvoiceForReminder = {
+  id: string;
+  status: string;
+  reference: string;
+  session: string;
+  amount_kobo: number;
+  school_name: string;
+  school_slug: string;
+  school_status: string;
+  billing_contact_name: string | null;
+  billing_contact_email: string | null;
+  hostname: string | null;
+  license_valid_until: string | null;
+  license_grace_until: string | null;
+  /** The stage the school is in right now; null when none is due. */
+  current_kind: ReminderKind | null;
+  sent_kinds: ReminderKind[];
 };
 
 export type StepContext = {
@@ -111,6 +131,15 @@ export interface Store {
   enqueueClaimReminders(): Promise<number>;
   /** Suspends active schools whose licence ended more than `afterDays` ago. Audited in the database. */
   suspendLapsedSchools(afterDays: number): Promise<{ slug: string; graceUntil: string }[]>;
+
+  enqueueInvoiceReminders(): Promise<number>;
+  invoiceForReminder(subscriptionId: string): Promise<InvoiceForReminder | null>;
+  /** Records that a stage went out (or was handled). False when it was already recorded. */
+  markInvoiceReminded(
+    subscriptionId: string,
+    kind: ReminderKind,
+    to: string | null
+  ): Promise<boolean>;
 
   loadStep(stepId: string): Promise<StepContext | null>;
   startStep(stepId: string): Promise<boolean>;
@@ -614,6 +643,39 @@ export class SupabaseStore implements Store {
           p_by: by,
         }),
         "activate_provisioned_school"
+      ) === true
+    );
+  }
+
+  async enqueueInvoiceReminders(): Promise<number> {
+    return Number(
+      need(await this.db.rpc("enqueue_invoice_reminders", {}), "enqueue_invoice_reminders") ?? 0
+    );
+  }
+
+  async invoiceForReminder(subscriptionId: string): Promise<InvoiceForReminder | null> {
+    const rows = need(
+      await this.db.rpc("invoice_for_reminder", { p_sub: subscriptionId }),
+      "invoice_for_reminder"
+    );
+    const r = (Array.isArray(rows) ? rows[0] : rows) as
+      | (Omit<InvoiceForReminder, "amount_kobo" | "sent_kinds"> & {
+          amount_kobo: number | string;
+          sent_kinds: ReminderKind[] | null;
+        })
+      | undefined;
+    return r ? { ...r, amount_kobo: Number(r.amount_kobo), sent_kinds: r.sent_kinds ?? [] } : null;
+  }
+
+  async markInvoiceReminded(subscriptionId: string, kind: ReminderKind, to: string | null) {
+    return (
+      need(
+        await this.db.rpc("mark_invoice_reminded", {
+          p_sub: subscriptionId,
+          p_kind: kind,
+          p_to: to,
+        }),
+        "mark_invoice_reminded"
       ) === true
     );
   }

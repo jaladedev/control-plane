@@ -10,13 +10,14 @@ import {
 } from "@/worker/handlers";
 import { handleProvisionSchool } from "@/worker/provision";
 import { handleReconfigureSchool } from "@/worker/reconfigure";
+import { handleInvoiceReminder, type ReminderDeps } from "@/worker/reminders";
 
 // The worker loop. A job is claimed (SKIP LOCKED in SQL), kept alive with a
 // heartbeat while it runs, and finished. A job that raises an unexpected error
 // is put back for another try (retry_job); the database fails it for good
 // after its attempts are used up.
 
-export type WorkerDeps = HandlerDeps & { workerId: string; heartbeatMs?: number };
+export type WorkerDeps = HandlerDeps & ReminderDeps & { workerId: string; heartbeatMs?: number };
 
 export const JOB_TYPES = [
   "rollout_step",
@@ -27,6 +28,7 @@ export const JOB_TYPES = [
   "telegram_notify",
   "provision_school",
   "reconfigure_school",
+  "invoice_reminder",
 ];
 
 /** Processes at most one job. Returns false when the queue was empty. */
@@ -50,6 +52,7 @@ export async function tick(deps: WorkerDeps): Promise<boolean> {
     else if (job.type === "telegram_notify") out = await handleTelegramNotify(job, deps);
     else if (job.type === "provision_school") out = await handleProvisionSchool(job, deps);
     else if (job.type === "reconfigure_school") out = await handleReconfigureSchool(job, deps);
+    else if (job.type === "invoice_reminder") out = await handleInvoiceReminder(job, deps);
     else out = { ok: false, error: `Unknown job type ${job.type}.` };
     await store.finishJob(job.id, workerId, out.ok, out.result ?? null, out.error ?? null);
     log(`job ${job.id} ${out.ok ? "succeeded" : `failed: ${out.error}`}`);
@@ -92,6 +95,7 @@ export async function runWorker(deps: WorkerDeps, opts: LoopOptions): Promise<vo
   let lastScan = 0;
   let lastReminders = 0;
   let lastSuspendCheck = 0;
+  let lastInvoiceReminders = 0;
   // Housekeeping must never stand between the worker and its jobs: a failure
   // is logged and tried again next interval, and the loop carries on.
   const housekeeping = async (name: string, due: boolean, fn: () => Promise<void>) => {
@@ -120,6 +124,15 @@ export async function runWorker(deps: WorkerDeps, opts: LoopOptions): Promise<vo
         const n = await deps.store.enqueueClaimReminders();
         if (n > 0) deps.log(`queued ${n} claim reminder(s)`);
       });
+      await housekeeping(
+        "invoice reminders",
+        now - lastInvoiceReminders >= 60 * 60_000,
+        async () => {
+          lastInvoiceReminders = now;
+          const n = await deps.store.enqueueInvoiceReminders();
+          if (n > 0) deps.log(`queued ${n} invoice reminder(s)`);
+        }
+      );
       const afterDays = opts.autoSuspendAfterDays;
       await housekeeping(
         "automatic suspension",

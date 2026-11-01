@@ -173,6 +173,36 @@ Schools are left alone if they have an open invoice or a claim waiting, or no li
 - What "suspended" does is unchanged: the registry status. It stops new invoices and pushes
   nothing to the school.
 
+## Invoice reminders
+
+The worker looks hourly for open (`pending`) invoices of **active** schools and emails the
+school's billing contact, once per stage and invoice. The stage follows the school's
+**current licence**, not the invoice date:
+
+| Stage       | When                                      |
+| ----------- | ----------------------------------------- |
+| `before_14` | within 14 days of the licence ending      |
+| `before_3`  | within 3 days of it ending                |
+| `grace`     | the licence ended, grace has not          |
+| `lapsed`    | grace ended too (the school is read-only) |
+
+- Only the most urgent stage reached is sent; a school first seen at `before_3` is not also
+  sent `before_14`. Each stage is recorded in `invoice_reminders` (append-only), so a stage is
+  never repeated, and a job is not queued again within 24 hours of the last one.
+- Just before sending, the job re-checks the invoice: paid, cancelled, a suspended school, a
+  stage that has moved on, or an already-sent stage all end it quietly with nothing sent.
+- The email is plain text: school, reference, session, amount, the dates, and where the bursar
+  pays (the school's own address when it has one). You also get a Telegram line.
+- **Email must be set up on the worker** (`RESEND_API_KEY` and `EMAIL_FROM_ADDRESS`, optionally
+  `EMAIL_REPLY_TO`). If a school has a contact and email is not set up, the job fails visibly
+  and is tried again; nothing is recorded as sent.
+- A school with **no billing contact email** is recorded as handled with no address, and you are
+  told once on Telegram to add one under Details or contact the school yourself.
+- A failure after the email is accepted but before it is recorded can send one stage twice. The
+  email carries an idempotency key to let Resend drop the repeat; that behaviour has not been
+  checked against the live API.
+- The Billing screen shows the stages sent under each open invoice.
+
 ## Invoice and receipt PDFs
 
 **Invoice (PDF)** is on every invoice waiting for payment; **Receipt (PDF)** on paid and

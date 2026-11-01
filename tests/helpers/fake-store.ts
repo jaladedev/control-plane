@@ -101,6 +101,9 @@ export function fakeStore(overrides: Partial<Store> = {}) {
       provisioning.push({ step, status, detail });
     }),
     activateSchool: vi.fn(async () => true),
+    enqueueInvoiceReminders: vi.fn(async () => 0),
+    invoiceForReminder: vi.fn(async () => null),
+    markInvoiceReminded: vi.fn(async () => true),
     ...overrides,
   };
   return store;

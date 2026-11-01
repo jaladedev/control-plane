@@ -66,6 +66,15 @@ async function main() {
         timeoutMs: env.BACKUP_TIMEOUT_MINUTES * 60_000,
       }),
       backupKeep: env.BACKUP_KEEP,
+      email:
+        env.RESEND_API_KEY && env.EMAIL_FROM_ADDRESS
+          ? {
+              apiKey: env.RESEND_API_KEY,
+              from: env.EMAIL_FROM_ADDRESS,
+              replyTo: env.EMAIL_REPLY_TO ?? null,
+            }
+          : undefined,
+      supportEmail: env.EMAIL_REPLY_TO ?? null,
       checkStorage: makeStorageCheck(),
       authAdmin: supabaseAuthAdmin,
       fetchMigrations: env.GITHUB_TOKEN

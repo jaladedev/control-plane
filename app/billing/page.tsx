@@ -50,6 +50,12 @@ const STATUS: Record<string, string> = {
   refunded: "bg-slate-200 text-slate-700",
   trial: "bg-slate-100 text-slate-600",
 };
+const REMINDER_LABEL: Record<string, string> = {
+  before_14: "14 days before",
+  before_3: "3 days before",
+  grace: "in grace",
+  lapsed: "lapsed",
+};
 const label = (s: string) => s.replace("_", " ");
 const day = (iso: string) => iso.slice(0, 10);
 
@@ -107,6 +113,29 @@ export default async function BillingPage({
   const decided = decidedRes.data ?? [];
   const topups = topupsRes.data ?? [];
   const reviews = reviewsRes.data ?? [];
+
+  // Which reminder stages have gone out for the open invoices (RLS: any dashboard role).
+  const openIds = subs.filter((s) => s.status === "pending").map((s) => s.id as string);
+  const remindersRes = openIds.length
+    ? await supabase
+        .from("invoice_reminders")
+        .select("subscription_id, kind, sent_at, sent_to")
+        .in("subscription_id", openIds)
+        .order("sent_at", { ascending: true })
+    : { data: [] };
+  const remindersBySub = new Map<
+    string,
+    { kind: string; sent_at: string; sent_to: string | null }[]
+  >();
+  for (const r of remindersRes.data ?? []) {
+    const list = remindersBySub.get(r.subscription_id as string) ?? [];
+    list.push({
+      kind: r.kind as string,
+      sent_at: r.sent_at as string,
+      sent_to: r.sent_to as string | null,
+    });
+    remindersBySub.set(r.subscription_id as string, list);
+  }
 
   return (
     <div className="space-y-8">
@@ -341,6 +370,12 @@ export default async function BillingPage({
                     >
                       {label(s.status as string)}
                     </span>
+                    {(remindersBySub.get(s.id as string) ?? []).map((r) => (
+                      <p key={r.kind} className="mt-1 text-xs text-slate-500">
+                        Reminded ({REMINDER_LABEL[r.kind] ?? r.kind}) {day(r.sent_at)}
+                        {r.sent_to ? "" : ", no contact email"}
+                      </p>
+                    ))}
                   </td>
                   <td className="px-3 py-2">{day(s.valid_until as string)}</td>
                   <td className="space-y-1 px-3 py-2">

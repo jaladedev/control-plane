@@ -41,6 +41,7 @@ describe("tick", () => {
       "telegram_notify",
       "provision_school",
       "reconfigure_school",
+      "invoice_reminder",
     ]);
   });
 

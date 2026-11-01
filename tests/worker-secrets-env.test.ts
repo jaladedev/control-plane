@@ -56,6 +56,19 @@ describe("loadWorkerEnv", () => {
     R2_SECRET_ACCESS_KEY: "secret-value",
   };
 
+  it("needs the email key and sender together, or neither", () => {
+    expect(loadWorkerEnv(good).RESEND_API_KEY).toBeUndefined();
+    const both = { ...good, RESEND_API_KEY: "re_x", EMAIL_FROM_ADDRESS: "Billing <b@example.com>" };
+    expect(loadWorkerEnv(both).EMAIL_FROM_ADDRESS).toBe("Billing <b@example.com>");
+    expect(() => loadWorkerEnv({ ...good, RESEND_API_KEY: "re_x" })).toThrow(/set together/);
+    expect(() => loadWorkerEnv({ ...good, EMAIL_FROM_ADDRESS: "b@example.com" })).toThrow(
+      /set together/
+    );
+    expect(() => loadWorkerEnv({ ...both, EMAIL_REPLY_TO: "not an address" })).toThrow(
+      /EMAIL_REPLY_TO/
+    );
+  });
+
   it("fills defaults", () => {
     const env = loadWorkerEnv(good);
     expect(env).toMatchObject({
