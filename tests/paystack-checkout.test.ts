@@ -22,6 +22,7 @@ function setup(over: Partial<CheckoutDeps> = {}, status = "active") {
     rateLimit: vi.fn(async () => true),
     configured: true,
     begin: vi.fn(async () => ({ reference: "PSK-0123456789ABCDEF", amountKobo: 15_000_000 })),
+    beginTopup: vi.fn(async () => ({ reference: "PSK-FEDCBA9876543210", amountKobo: 500_000 })),
     initialize: vi.fn(async () => ({ authorizationUrl: "https://checkout.paystack.com/abc" })),
     audit: vi.fn(async () => {}),
     ...over,
@@ -164,5 +165,72 @@ describe("handleCheckout", () => {
 
   it("refuses an archived school", async () => {
     expect((await setup({}, "archived").send(body())).status).toBe(403);
+  });
+
+  describe("paying a top-up", () => {
+    const topupBody = (over: Record<string, unknown> = {}) =>
+      body({ subscription_reference: undefined, topup_reference: "TOP-0A1B2C3D", ...over });
+
+    it("starts a checkout for the top-up's own amount, not an invoice's", async () => {
+      const { deps, send } = setup();
+      const res = await send(topupBody());
+      expect(res).toEqual({
+        status: 201,
+        body: {
+          ok: true,
+          authorization_url: "https://checkout.paystack.com/abc",
+          reference: "PSK-FEDCBA9876543210",
+        },
+      });
+      expect(deps.beginTopup).toHaveBeenCalledWith(
+        "school-1",
+        "TOP-0A1B2C3D",
+        "bursar@school.example"
+      );
+      expect(deps.begin).not.toHaveBeenCalled();
+      expect(deps.initialize).toHaveBeenCalledWith({
+        email: "bursar@school.example",
+        amountKobo: 500_000,
+        reference: "PSK-FEDCBA9876543210",
+        callbackUrl: "https://school.example/renewal",
+        metadata: { school: "greenfield", topup: "TOP-0A1B2C3D" },
+      });
+      expect(deps.audit).toHaveBeenCalledWith("paystack.checkout", "school-1", {
+        topup: "TOP-0A1B2C3D",
+        reference: "PSK-FEDCBA9876543210",
+        amount_kobo: 500_000,
+      });
+    });
+
+    it("refuses a body that names both an invoice and a top-up, or neither", async () => {
+      const { deps, send } = setup();
+      expect((await send(topupBody({ subscription_reference: "SUB-0A1B2C3D" }))).status).toBe(400);
+      expect((await send(topupBody({ topup_reference: undefined }))).status).toBe(400);
+      expect(deps.begin).not.toHaveBeenCalled();
+      expect(deps.beginTopup).not.toHaveBeenCalled();
+    });
+
+    it("refuses a reference of the wrong kind in either field", async () => {
+      const { deps, send } = setup();
+      expect((await send(topupBody({ topup_reference: "SUB-0A1B2C3D" }))).status).toBe(400);
+      expect((await send(body({ subscription_reference: "TOP-0A1B2C3D" }))).status).toBe(400);
+      expect(deps.beginTopup).not.toHaveBeenCalled();
+    });
+
+    it("takes no amount from the caller", async () => {
+      const { deps, send } = setup();
+      expect((await send(topupBody({ amount_kobo: 1 }))).status).toBe(400);
+      expect(deps.beginTopup).not.toHaveBeenCalled();
+    });
+
+    it("passes the database's wording through when the top-up cannot be paid", async () => {
+      const { send } = setup({
+        beginTopup: vi.fn(async () => ({ businessError: "That top-up has already been paid." })),
+      });
+      expect(await send(topupBody())).toEqual({
+        status: 409,
+        body: { ok: false, error: "That top-up has already been paid." },
+      });
+    });
   });
 });

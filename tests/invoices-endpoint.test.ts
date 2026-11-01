@@ -3,6 +3,7 @@ import {
   INVOICES_LIMITS,
   handleInvoices,
   openInvoiceFromRow,
+  openTopupFromRow,
   type InvoicesDeps,
   type OpenInvoice,
 } from "@/lib/billing/invoices-endpoint";
@@ -31,6 +32,7 @@ function setup(over: Partial<InvoicesDeps> = {}, status = "active") {
     publicKeys: vi.fn(async () => [keys.publicKey]),
     rateLimit: vi.fn(async () => true),
     openInvoices: vi.fn(async () => [invoice]),
+    openTopups: vi.fn(async () => []),
     payTo: { name: "Acme Schools", lines: ["Bank 0123456789"] },
     cardEnabled: true,
     proofEnabled: false,
@@ -77,11 +79,51 @@ describe("handleInvoices", () => {
           ],
         },
       ],
+      topups: [],
       pay_to: { name: "Acme Schools", lines: ["Bank 0123456789"] },
       card_enabled: true,
       proof_enabled: false,
     });
     expect(deps.openInvoices).toHaveBeenCalledWith("school-1");
+  });
+
+  it("lists the school's open top-ups, each with the paid invoice it belongs to", async () => {
+    const { deps, send } = setup({
+      openTopups: vi.fn(async () => [
+        {
+          reference: "TOP-1A2B3C4D",
+          invoiceReference: "SUB-0A1B2C3D",
+          session: "2026/2027",
+          extraStudents: 12,
+          amountKobo: 60_000,
+        },
+      ]),
+    });
+    const res = await send();
+    expect(res.body.topups).toEqual([
+      {
+        reference: "TOP-1A2B3C4D",
+        invoice_reference: "SUB-0A1B2C3D",
+        session: "2026/2027",
+        extra_students: 12,
+        amount_kobo: 60_000,
+      },
+    ]);
+    expect(deps.openTopups).toHaveBeenCalledWith("school-1");
+  });
+
+  it("builds an open top-up from a database row, whether the join comes back as one or a list", () => {
+    const row = { reference: "TOP-1A2B3C4D", extra_students: 3, amount_kobo: "30000" };
+    const want = {
+      reference: "TOP-1A2B3C4D",
+      invoiceReference: "SUB-0A1B2C3D",
+      session: "2026/2027",
+      extraStudents: 3,
+      amountKobo: 30_000,
+    };
+    const inv = { reference: "SUB-0A1B2C3D", session: "2026/2027" };
+    expect(openTopupFromRow({ ...row, subscriptions: inv })).toEqual(want);
+    expect(openTopupFromRow({ ...row, subscriptions: [inv] })).toEqual(want);
   });
 
   it("only ever asks for the authenticated school's invoices", async () => {

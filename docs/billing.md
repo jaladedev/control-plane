@@ -127,14 +127,25 @@ from paying. Limits are `CLAIM_LIMITS` in `lib/billing/claim-endpoint.ts`.
 On a **paid** invoice, **Top up students** invoices extra students at today's extra-student
 price (and the school's override for that session, shown on the line). The top-up has its own
 reference, `TOP-` and eight characters, and waits under **Top-ups waiting for payment**.
-Nothing changes for the school until a person marks it paid, with the amount the bank shows
-(which must equal the top-up) and what they checked. Then the invoice's extra students and
-`topup_kobo` go up, the school's allowance is raised, and a higher licence version is pushed.
+Nothing changes for the school until the top-up is paid, either by a person marking it paid, with
+the amount the bank shows (which must equal the top-up) and what they checked, or by **card**
+(below). Then the invoice's extra students and `topup_kobo` go up, the school's allowance is
+raised, and a higher licence version is pushed.
 
 - One waiting top-up per invoice. **Cancel** needs a reason.
-- A top-up is marked paid by a person; the claim endpoint only takes `SUB-` references, so a
-  school cannot claim a top-up yet.
-- A top-up never changes the end dates.
+- A school can pay a waiting top-up **by card**. Its renewal screen lists them (`topups` in the
+  `/api/invoices` answer) and starts a checkout with `topup_reference` in place of
+  `subscription_reference` (exactly one of the two). The amount is the top-up's, read in the
+  database. Paystack's webhook then pays it as a person would (`paystack_record_charge`),
+  recorded as paid by `system:paystack` with Paystack's reference.
+- A top-up **paid by card and then needing review** is held, not applied, and the owner is told on
+  Telegram: the wrong amount or currency, a top-up cancelled or already paid while the payer was
+  paying (two checkouts for one top-up: the second is held), or an invoice that is no longer paid.
+  Refund it in the Paystack dashboard and record it under **Card payments needing review**.
+- The claim endpoint still only takes `SUB-` references, so a school cannot **claim a bank
+  transfer** for a top-up yet; finance marks a transferred top-up paid.
+- A top-up never changes the end dates. A checkout is refused once the session has ended
+  (grace included) or the school is not active.
 
 ## Refunds
 
@@ -244,7 +255,7 @@ and records what they did. The control plane does not move money.
   that claim with the reason "paid by card" and pays the invoice.
 - Paystack is told 200 for anything it should not resend, and 500 only when we could not write
   the payment down, so that it retries. A repeated webhook changes nothing.
-- A card payment is for the invoice only. Top-ups are not paid by card yet.
+- A card payment is for an invoice or for one of its top-ups; a top-up paid by card is described under Top-ups.
 
 Setup: put your **secret** key in `PAYSTACK_SECRET_KEY` on the web app, and set the webhook URL
 in the Paystack dashboard to `https://<the dashboard>/api/paystack/webhook`. Paystack's webhook
@@ -263,6 +274,6 @@ the control plane (see school_app's `npm run claim-key`).
 
 ## What is not built yet
 
-- A school **claiming or paying by card for a top-up** (top-ups are paid by finance for now).
+- A school **claiming a bank transfer for a top-up** (a top-up can be paid by card; a transfer is marked paid by finance).
 - Refunding a card payment from here: refund it in the Paystack dashboard, then record it.
 - Paying an invoice **partly**: a claim or card payment must equal the invoice.

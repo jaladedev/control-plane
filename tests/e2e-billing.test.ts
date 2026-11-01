@@ -718,6 +718,16 @@ describe.skipIf(!ADMIN_URL)(
             const row = (r.data as { reference: string; amount_kobo: string }[])[0];
             return { reference: row.reference, amountKobo: Number(row.amount_kobo) };
           },
+          beginTopup: async (schoolId, ref, email) => {
+            const r = await rpc("paystack_begin_topup", {
+              p_school: schoolId,
+              p_reference: ref,
+              p_email: email,
+            });
+            if (r.error) return { businessError: r.error.message };
+            const row = (r.data as { reference: string; amount_kobo: string }[])[0];
+            return { reference: row.reference, amountKobo: Number(row.amount_kobo) };
+          },
           initialize: async (p) => {
             sent = { reference: p.reference, amountKobo: p.amountKobo };
             return { authorizationUrl: "https://checkout.paystack.com/test" };
@@ -776,6 +786,60 @@ describe.skipIf(!ADMIN_URL)(
       // Paystack resends the same webhook: nothing changes.
       expect((await webhook(ref, qt.total_kobo)).body).toEqual({ ok: true, result: "duplicate" });
       expect(await q(cp, "select 1 from jobs where type = 'license_push'")).toHaveLength(1);
+    });
+
+    it("takes a card payment for a top-up from checkout to a raised allowance in the school's own database", async () => {
+      const { id } = await invoice(0);
+      await call("mark_subscription_paid", { p_sub: id, p_ref: "", p_by: "f", p_reason: "paid" });
+      await drain();
+      const topup = (await call("create_topup", {
+        p_sub: id,
+        p_extra: 12,
+        p_amount: 12 * 5_000,
+        p_line: JSON.stringify({ item: "extra_student", unit_kobo: 5_000 }),
+        p_by: "finance",
+      })) as string;
+      const topupRef = (
+        await one("select reference from subscription_topups where id = $1", [topup])
+      ).reference as string;
+
+      const { res, sent } = await checkout(topupRef, {
+        subscription_reference: undefined,
+        topup_reference: topupRef,
+      });
+      expect(res.status).toBe(201);
+      expect(sent).toMatchObject({ amountKobo: 60_000 });
+      const ref = (res.body as { reference: string }).reference;
+      // Not paid until Paystack says so.
+      expect(
+        (await one("select status from subscription_topups where id = $1", [topup])).status
+      ).toBe("pending");
+
+      expect((await webhook(ref, 60_000)).body).toEqual({ ok: true, result: "applied" });
+      expect(
+        await one("select status, paid_by, payment_ref from subscription_topups where id = $1", [
+          topup,
+        ])
+      ).toMatchObject({ status: "paid", paid_by: "system:paystack", payment_ref: ref });
+      await drain();
+      expect((await q(school, "select version, student_cap from school_license"))[0]).toMatchObject(
+        {
+          version: "2",
+          student_cap: 312,
+        }
+      );
+
+      // Paystack resends the webhook: nothing changes, nothing more is pushed.
+      expect((await webhook(ref, 60_000)).body).toEqual({ ok: true, result: "duplicate" });
+      expect(await q(cp, "select 1 from jobs where type = 'license_push'")).toHaveLength(2);
+      // And a paid top-up cannot be paid again.
+      expect(
+        (await checkout(topupRef, { subscription_reference: undefined, topup_reference: topupRef }))
+          .res
+      ).toMatchObject({
+        status: 409,
+        body: { error: "That top-up has already been paid." },
+      });
     });
 
     it("flags a short card payment for a person, leaves the invoice open and queues a notice", async () => {

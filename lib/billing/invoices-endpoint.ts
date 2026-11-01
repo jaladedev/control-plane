@@ -50,8 +50,37 @@ export function openInvoiceFromRow(r: {
   };
 }
 
+/** Extra students invoiced on a paid invoice, waiting for payment. Payable by card. */
+export type OpenTopup = {
+  reference: string;
+  /** The paid invoice it belongs to. */
+  invoiceReference: string;
+  session: string;
+  extraStudents: number;
+  amountKobo: number;
+};
+
+/** One `subscription_topups` row (with its invoice) as the open list shows it. */
+export function openTopupFromRow(r: {
+  reference: string;
+  extra_students: number;
+  amount_kobo: number | string;
+  subscriptions:
+    { reference: string; session: string } | { reference: string; session: string }[] | null;
+}): OpenTopup {
+  const inv = Array.isArray(r.subscriptions) ? r.subscriptions[0] : r.subscriptions;
+  return {
+    reference: r.reference,
+    invoiceReference: inv?.reference ?? "",
+    session: inv?.session ?? "",
+    extraStudents: r.extra_students,
+    amountKobo: Number(r.amount_kobo),
+  };
+}
+
 export type InvoicesDeps = SchoolAuthDeps & {
   openInvoices(schoolId: string): Promise<OpenInvoice[]>;
+  openTopups(schoolId: string): Promise<OpenTopup[]>;
   /** Who to pay and where: the issuer's name and bank details. */
   payTo: { name: string; lines: string[] };
   cardEnabled: boolean;
@@ -73,7 +102,10 @@ export async function handleInvoices(
   const parsed = parseBody(req.rawBody, z.object({}).strict());
   if (!parsed.ok) return parsed.result;
 
-  const invoices = await deps.openInvoices(auth.school.id);
+  const [invoices, topups] = await Promise.all([
+    deps.openInvoices(auth.school.id),
+    deps.openTopups(auth.school.id),
+  ]);
   return {
     status: 200,
     body: {
@@ -89,6 +121,13 @@ export async function handleInvoices(
           quantity: l.quantity,
           total_kobo: l.totalKobo,
         })),
+      })),
+      topups: topups.map((t) => ({
+        reference: t.reference,
+        invoice_reference: t.invoiceReference,
+        session: t.session,
+        extra_students: t.extraStudents,
+        amount_kobo: t.amountKobo,
       })),
       pay_to: deps.payTo,
       card_enabled: deps.cardEnabled,

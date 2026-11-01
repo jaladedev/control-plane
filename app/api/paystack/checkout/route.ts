@@ -16,6 +16,20 @@ export async function POST(request: NextRequest) {
   const rawBody = await request.text();
   const slug = request.headers.get("x-school-slug");
   const secret = env.PAYSTACK_SECRET_KEY;
+  // The database function reads the amount itself; its refusals are worded for people.
+  const begin = async (fn: string, schoolId: string, reference: string, email: string) => {
+    const { data, error } = await admin.rpc(fn, {
+      p_school: schoolId,
+      p_reference: reference,
+      p_email: email,
+    });
+    if (error) {
+      if (error.code === "P0001") return { businessError: error.message };
+      throw new Error(error.message);
+    }
+    const row = (data as { reference: string; amount_kobo: number | string }[])[0];
+    return { reference: row.reference, amountKobo: Number(row.amount_kobo) };
+  };
   try {
     const result = await handleCheckout(
       {
@@ -28,19 +42,9 @@ export async function POST(request: NextRequest) {
       {
         ...schoolAuthDeps(admin),
         configured: Boolean(secret),
-        begin: async (schoolId, reference, email) => {
-          const { data, error } = await admin.rpc("paystack_begin", {
-            p_school: schoolId,
-            p_reference: reference,
-            p_email: email,
-          });
-          if (error) {
-            if (error.code === "P0001") return { businessError: error.message };
-            throw new Error(error.message);
-          }
-          const row = (data as { reference: string; amount_kobo: number | string }[])[0];
-          return { reference: row.reference, amountKobo: Number(row.amount_kobo) };
-        },
+        begin: (schoolId, reference, email) => begin("paystack_begin", schoolId, reference, email),
+        beginTopup: (schoolId, reference, email) =>
+          begin("paystack_begin_topup", schoolId, reference, email),
         initialize: (p) => initializeTransaction(secret!, p),
         audit: (action, schoolId, details) =>
           writeAudit({ email: `school:${slug}`, role: "school" }, { action, schoolId, details }),

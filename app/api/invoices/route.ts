@@ -3,7 +3,11 @@ import { env } from "@/lib/env";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { schoolAuthDeps } from "@/lib/auth/school-auth-deps";
 import { issuerFrom } from "@/lib/billing/documents";
-import { handleInvoices, openInvoiceFromRow } from "@/lib/billing/invoices-endpoint";
+import {
+  handleInvoices,
+  openInvoiceFromRow,
+  openTopupFromRow,
+} from "@/lib/billing/invoices-endpoint";
 import { proofStore } from "@/lib/storage/proof-store";
 
 // A school's server asks here, signed with its own key, which invoices are open.
@@ -29,6 +33,18 @@ export async function POST(request: NextRequest) {
         payTo: issuer,
         cardEnabled: Boolean(env.PAYSTACK_SECRET_KEY),
         proofEnabled: proofStore !== null,
+        openTopups: async (schoolId) => {
+          const { data, error } = await admin
+            .from("subscription_topups")
+            .select("reference, extra_students, amount_kobo, subscriptions(reference, session)")
+            .eq("school_id", schoolId)
+            .eq("status", "pending")
+            .order("created_at", { ascending: false });
+          if (error) throw new Error(error.message);
+          return (data ?? []).map((r) =>
+            openTopupFromRow(r as unknown as Parameters<typeof openTopupFromRow>[0])
+          );
+        },
         openInvoices: async (schoolId) => {
           const { data, error } = await admin
             .from("subscriptions")
