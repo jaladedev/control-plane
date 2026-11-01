@@ -5,13 +5,33 @@ import { z } from "zod";
 // holds school database URLs or the deploy key, and the worker never needs the
 // browser-facing Supabase settings.
 
+// The Infisical settings, shared with scripts that run outside the worker.
+export const infisicalShape = {
+  INFISICAL_URL: z.string().url().default("https://app.infisical.com"),
+  INFISICAL_CLIENT_ID: z.string().min(1).optional(),
+  INFISICAL_CLIENT_SECRET: z.string().min(1).optional(),
+  INFISICAL_PROJECT_ID: z.string().min(1).optional(),
+  INFISICAL_ENVIRONMENT: z.string().min(1).default("prod"),
+  INFISICAL_SECRETS_PATH: z
+    .string()
+    .regex(/^\/[A-Za-z0-9._/-]*$/, "must be a folder path like /schools")
+    .refine((v) => !v.includes(".."), "must be a folder path like /schools")
+    .default("/schools"),
+  INFISICAL_CACHE_SECONDS: z.coerce.number().int().min(10).max(3600).default(60),
+};
+
 const base = z.object({
   SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
-  SCHOOL_DB_URLS: z.string().min(2),
+  // School credentials come from ONE of two places (see backendProblems below): these
+  // two settings, or Infisical.
+  SCHOOL_DB_URLS: z.string().min(2).optional(),
   // Per school, the settings its container starts with (its Supabase project, R2
   // bucket and keys, signing secret). Only needed to provision a new school.
   SCHOOL_APP_ENVS: z.string().optional(),
+  // Infisical: one folder per school under INFISICAL_SECRETS_PATH, read with a machine
+  // identity (Universal Auth). docs/secrets.md.
+  ...infisicalShape,
   SCHOOL_DB_CA_FILE: z.string().optional(),
   DEPLOY_SSH_HOST: z.string().min(1),
   DEPLOY_SSH_USER: z.string().default("root"),
@@ -72,10 +92,46 @@ const schema = base.refine((e) => Boolean(e.RESEND_API_KEY) === Boolean(e.EMAIL_
 
 export type WorkerEnv = z.infer<typeof schema>;
 
+/** True when school credentials come from Infisical. */
+export const usesInfisical = (e: Pick<WorkerEnv, "INFISICAL_CLIENT_ID">) =>
+  Boolean(e.INFISICAL_CLIENT_ID);
+
+/**
+ * Credentials come from exactly one place. With Infisical, the database URLs and
+ * container settings must NOT also sit in this environment: leaving them there would
+ * defeat the point and leave two sources that can disagree.
+ */
+export function backendProblems(source: Record<string, string | undefined>): string[] {
+  const set = (k: string) => Boolean(source[k]);
+  const infisical = ["INFISICAL_CLIENT_ID", "INFISICAL_CLIENT_SECRET", "INFISICAL_PROJECT_ID"];
+  if (infisical.some(set)) {
+    const problems = infisical
+      .filter((k) => !set(k))
+      .map((k) => `${k}: required when using Infisical (all three of its credentials are needed)`);
+    if (set("SCHOOL_DB_URLS") || set("SCHOOL_APP_ENVS")) {
+      problems.push(
+        "SCHOOL_DB_URLS: remove SCHOOL_DB_URLS and SCHOOL_APP_ENVS when Infisical is used, so the secrets live in one place"
+      );
+    }
+    return problems;
+  }
+  return set("SCHOOL_DB_URLS")
+    ? []
+    : [
+        "SCHOOL_DB_URLS: set it, or set INFISICAL_CLIENT_ID, INFISICAL_CLIENT_SECRET and INFISICAL_PROJECT_ID",
+      ];
+}
+
 export function loadWorkerEnv(source: Record<string, string | undefined> = process.env): WorkerEnv {
   const parsed = schema.safeParse(source);
-  if (!parsed.success) {
-    const lines = parsed.error.issues.map((i) => `  ${i.path.join(".")}: ${i.message}`);
+  const backend = backendProblems(source);
+  if (!parsed.success || backend.length > 0) {
+    const lines = [
+      ...(parsed.success
+        ? []
+        : parsed.error.issues.map((i) => `  ${i.path.join(".")}: ${i.message}`)),
+      ...backend.map((p) => `  ${p}`),
+    ];
     throw new Error(`The worker's environment is incomplete:\n${lines.join("\n")}`);
   }
   return parsed.data;

@@ -1,8 +1,8 @@
 import { z } from "zod";
 
-// Where the worker gets school credentials. The interface is the point: today
-// the values come from the worker's own environment; the plan puts them in
-// Infisical, and swapping that in means writing one more class, nothing else.
+// Where the worker gets school credentials. The interface is the point: the values
+// come from the worker's own environment (EnvSecrets) or from Infisical
+// (worker/infisical.ts), chosen at start-up by worker/make-secrets.ts.
 // The dashboard web app never uses this module: it only queues jobs.
 
 export interface SecretsProvider {
@@ -45,23 +45,36 @@ export class EnvSecrets implements SecretsProvider {
   }
 
   redact(text: string): string {
-    let out = text;
-    // Every value in a school's container settings is treated as secret, longest
-    // first so a value that contains another is replaced whole.
-    const values = Object.values(this.appEnvs)
-      .flatMap((env) => Object.values(env))
-      .filter((v) => v.length >= 8)
-      .sort((a, b) => b.length - a.length);
-    for (const value of values) out = out.split(value).join("[secret]");
-    for (const url of Object.values(this.urls)) {
-      out = out.split(url).join("[database url]");
-      try {
-        const password = decodeURIComponent(new URL(url).password);
-        if (password.length >= 6) out = out.split(password).join("[secret]");
-      } catch {
-        // not a parseable URL: the whole-value replacement above is all we can do
-      }
-    }
-    return out;
+    return redactSecretText(text, {
+      appEnvValues: Object.values(this.appEnvs).flatMap((env) => Object.values(env)),
+      databaseUrls: Object.values(this.urls),
+    });
   }
+}
+
+/**
+ * Replaces secret values in a message so it can be stored or logged. Shared by every
+ * provider so the backends cannot drift apart. Every value in a school's container
+ * settings is treated as secret, longest first so a value that contains another is
+ * replaced whole; a database URL goes whole, then its password on its own.
+ */
+export function redactSecretText(
+  text: string,
+  secrets: { appEnvValues: Iterable<string>; databaseUrls: Iterable<string> }
+): string {
+  let out = text;
+  const values = [...secrets.appEnvValues]
+    .filter((v) => v.length >= 8)
+    .sort((a, b) => b.length - a.length);
+  for (const value of values) out = out.split(value).join("[secret]");
+  for (const url of secrets.databaseUrls) {
+    out = out.split(url).join("[database url]");
+    try {
+      const password = decodeURIComponent(new URL(url).password);
+      if (password.length >= 6) out = out.split(password).join("[secret]");
+    } catch {
+      // not a parseable URL: the whole-value replacement above is all we can do
+    }
+  }
+  return out;
 }

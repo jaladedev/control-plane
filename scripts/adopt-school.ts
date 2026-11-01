@@ -3,7 +3,8 @@ import { createClient } from "@supabase/supabase-js";
 import { adoptSchool, planAdoption } from "@/lib/migrate/adopt";
 import { readAppliedVersionsReadOnly } from "@/lib/migrate/runner";
 import { makeConnect } from "@/worker/connect";
-import { EnvSecrets } from "@/worker/secrets";
+import { EnvSecrets, type SecretsProvider } from "@/worker/secrets";
+import { secretsFromProcessEnv } from "@/worker/make-secrets";
 
 // Adopts a school whose database already has its schema from before the runner
 // existed: records the migrations up to a version as applied, WITHOUT running
@@ -16,8 +17,8 @@ import { EnvSecrets } from "@/worker/secrets";
 // school's database really has every change in those migrations (compare it with
 // a database built from the migration files): this records history, it cannot
 // verify it. Run it once per existing school, after registering the release.
-// Needs SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY and SCHOOL_DB_URLS (the worker's
-// settings; from the environment or .env.local). --by must be an active owner,
+// Needs SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY and the worker's school-credential
+// settings (SCHOOL_DB_URLS, or the INFISICAL_* ones; from the environment or .env.local). --by must be an active owner,
 // and the audit row is written before anything changes.
 
 function arg(name: string): string | undefined {
@@ -51,7 +52,8 @@ async function main() {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) fail("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
-  const secrets = new EnvSecrets(process.env.SCHOOL_DB_URLS);
+  const secrets = await secretsFromProcessEnv();
+  active = secrets;
   const control = createClient(url!, key!, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
@@ -129,6 +131,14 @@ async function main() {
 
 main().catch((e) => fail(secretsSafe(e instanceof Error ? e.message : String(e))));
 
+// Set once the secrets are loaded, so an error after that is scrubbed with what was loaded.
+let active: SecretsProvider | null = null;
+
 function secretsSafe(message: string): string {
-  return new EnvSecrets(process.env.SCHOOL_DB_URLS).redact(message);
+  if (active) return active.redact(message);
+  try {
+    return new EnvSecrets(process.env.SCHOOL_DB_URLS).redact(message);
+  } catch {
+    return message;
+  }
 }

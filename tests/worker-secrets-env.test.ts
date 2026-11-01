@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EnvSecrets } from "@/worker/secrets";
-import { loadWorkerEnv } from "@/worker/env";
+import { loadWorkerEnv, usesInfisical } from "@/worker/env";
 import { sslOptions } from "@/worker/connect";
 
 const URL_G = "postgres://postgres:s3cretPassw0rd@db.abcdefghij.supabase.co:5432/postgres";
@@ -102,9 +102,76 @@ describe("loadWorkerEnv", () => {
   });
 
   it("lists every missing setting at once", () => {
-    expect(() => loadWorkerEnv({})).toThrow(
-      /SUPABASE_URL[\s\S]*SCHOOL_DB_URLS[\s\S]*DEPLOY_SSH_KNOWN_HOSTS/
-    );
+    const message = (() => {
+      try {
+        loadWorkerEnv({});
+      } catch (e) {
+        return (e as Error).message;
+      }
+      return "";
+    })();
+    for (const key of ["SUPABASE_URL", "SCHOOL_DB_URLS", "DEPLOY_SSH_KNOWN_HOSTS"]) {
+      expect(message).toContain(key);
+    }
+  });
+
+  describe("where school credentials come from", () => {
+    const infisical = {
+      INFISICAL_CLIENT_ID: "cid",
+      INFISICAL_CLIENT_SECRET: "csecret",
+      INFISICAL_PROJECT_ID: "proj",
+    };
+    const { SCHOOL_DB_URLS: _drop, ...noEnvSecrets } = good;
+    void _drop;
+
+    it("takes Infisical in place of SCHOOL_DB_URLS, with sensible defaults", () => {
+      const env = loadWorkerEnv({ ...noEnvSecrets, ...infisical });
+      expect(usesInfisical(env)).toBe(true);
+      expect(env).toMatchObject({
+        INFISICAL_URL: "https://app.infisical.com",
+        INFISICAL_ENVIRONMENT: "prod",
+        INFISICAL_SECRETS_PATH: "/schools",
+        INFISICAL_CACHE_SECONDS: 60,
+      });
+    });
+    it("still works from SCHOOL_DB_URLS alone", () => {
+      expect(usesInfisical(loadWorkerEnv(good))).toBe(false);
+    });
+    it("needs one of the two", () => {
+      expect(() => loadWorkerEnv(noEnvSecrets)).toThrow(
+        /SCHOOL_DB_URLS: set it, or set INFISICAL_/
+      );
+    });
+    it("needs all three Infisical credentials, naming the missing ones", () => {
+      expect(() => loadWorkerEnv({ ...noEnvSecrets, INFISICAL_CLIENT_ID: "cid" })).toThrow(
+        /INFISICAL_CLIENT_SECRET[\s\S]*INFISICAL_PROJECT_ID/
+      );
+    });
+    it("refuses to keep the secrets in this environment as well", () => {
+      expect(() => loadWorkerEnv({ ...good, ...infisical })).toThrow(
+        /remove SCHOOL_DB_URLS and SCHOOL_APP_ENVS/
+      );
+      expect(() => loadWorkerEnv({ ...noEnvSecrets, ...infisical, SCHOOL_APP_ENVS: "{}" })).toThrow(
+        /remove SCHOOL_DB_URLS and SCHOOL_APP_ENVS/
+      );
+    });
+    it("checks the folder path and the cache time", () => {
+      const ok = { ...noEnvSecrets, ...infisical };
+      expect(
+        loadWorkerEnv({ ...ok, INFISICAL_SECRETS_PATH: "/prod/schools" }).INFISICAL_SECRETS_PATH
+      ).toBe("/prod/schools");
+      for (const bad of ["schools", "/a/../b", "/has space"]) {
+        expect(() => loadWorkerEnv({ ...ok, INFISICAL_SECRETS_PATH: bad })).toThrow(
+          /INFISICAL_SECRETS_PATH/
+        );
+      }
+      for (const bad of ["5", "7200", "soon"]) {
+        expect(() => loadWorkerEnv({ ...ok, INFISICAL_CACHE_SECONDS: bad })).toThrow(
+          /INFISICAL_CACHE_SECONDS/
+        );
+      }
+      expect(() => loadWorkerEnv({ ...ok, INFISICAL_URL: "nope" })).toThrow(/INFISICAL_URL/);
+    });
   });
 
   it("requires every backup setting: a worker that cannot back up must not start", () => {

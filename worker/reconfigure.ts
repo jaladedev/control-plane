@@ -106,7 +106,7 @@ export async function handleReconfigureSchool(job: Job, deps: HandlerDeps): Prom
         : (probe.error ?? "unhealthy");
       throw new Refused(
         `The new settings are running, but the school does not look right: ${why}. ` +
-          "The old settings are NOT restored automatically. Put the previous values back in SCHOOL_APP_ENVS and apply again."
+          "The old settings are NOT restored automatically. Put the previous values back in the school's settings (SCHOOL_APP_ENVS, or its Infisical folder) and apply again."
       );
     }
     await notify(deps, `Settings applied to ${school.slug}. It is healthy on the new settings.`);

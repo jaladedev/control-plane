@@ -163,8 +163,8 @@ else in the same step.
 ### The worker
 
 `npm run worker` runs the process that does the work; see `docs/worker.md` and
-`worker/.env.example`. It needs, in its own environment, `SCHOOL_DB_URLS` (each
-school's direct Postgres connection string), the deploy SSH key and known-hosts
+`worker/.env.example`. It needs, in its own environment, the schools' credentials (`SCHOOL_DB_URLS`, each
+school's direct Postgres connection string, or Infisical: `docs/secrets.md`), the deploy SSH key and known-hosts
 file, and the control-plane service key. **These stay out of the dashboard.**
 It also re-reads each school's applied migrations every 30 minutes for the
 version matrix (and on **Refresh versions**).
@@ -209,14 +209,14 @@ same `CRON_SECRET` (32+ characters, `openssl rand -hex 32`) in the app's
 environment. Without `CRON_SECRET` the route refuses every call. GitHub's
 scheduler can run late or skip runs, so a gap in the history is not by itself an
 outage. If the app is behind Cloudflare Access, add a bypass policy for the path
-`/api/cron/health`; the route checks its own secret.
+`/api/cron/health`; the route checks its own secret (all the bypass paths: `docs/cloudflare-access.md`).
 
 The health run is not written to the audit log (it would add a row every ten
 minutes); it only writes health data. Anything an actor does still is.
 
-Not yet built: secrets-manager access (school credentials are interim
-environment variables), creating a school from the dashboard, and Cloudflare
-Access and the VPS (set up outside this repo).
+School credentials can come from Infisical (`docs/secrets.md`). Cloudflare Access is checked
+again at the app when `CF_ACCESS_TEAM_DOMAIN` and `CF_ACCESS_AUD` are set
+(`docs/cloudflare-access.md`). The VPS is set up outside this repo.
 
 ## Setup
 
@@ -234,8 +234,9 @@ Access and the VPS (set up outside this repo).
    environment).
 6. `npm install`, `npm run dev`, sign in, and set up your authenticator app.
 
-Put the app behind Cloudflare Access in production; the app's own login is a
-second layer, not a replacement.
+Put the app behind Cloudflare Access in production and set `CF_ACCESS_TEAM_DOMAIN` and
+`CF_ACCESS_AUD` (`docs/cloudflare-access.md`); the app's own login is a second layer, not a
+replacement.
 
 ## Free plan notes
 

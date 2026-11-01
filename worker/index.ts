@@ -2,8 +2,8 @@ import { probeSchool } from "@/lib/health";
 import { runDeployCommand } from "@/lib/deploy/client";
 import { makeConnect } from "@/worker/connect";
 import { loadWorkerEnv } from "@/worker/env";
+import { makeSecrets } from "@/worker/make-secrets";
 import { ToolsBackupProvider } from "@/worker/backup";
-import { EnvSecrets } from "@/worker/secrets";
 import { makeStorageCheck } from "@/worker/storage-check";
 import { supabaseAuthAdmin } from "@/worker/auth-admin";
 import { fetchMigrationsAtCommit } from "@/lib/github-migrations";
@@ -17,7 +17,7 @@ import { runWorker } from "@/worker/run";
 
 async function main() {
   const env = loadWorkerEnv();
-  const secrets = new EnvSecrets(env.SCHOOL_DB_URLS, env.SCHOOL_APP_ENVS);
+  const secrets = await makeSecrets(env);
   const log = (message: string) =>
     console.log(`${new Date().toISOString()} ${secrets.redact(message)}`);
   if (!env.SCHOOL_DB_CA_FILE) {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { accessConfigFromEnv } from "@/lib/cf-access";
 
 // Validated once, when first imported on the server. A missing value stops the
 // app with a message naming it, instead of failing later inside a request.
@@ -32,6 +33,9 @@ const schema = z
       .string()
       .regex(/^sk_(live|test)_[A-Za-z0-9]{10,}$/)
       .optional(),
+    // Cloudflare Access, checked again at the app (docs/cloudflare-access.md). Both or none.
+    CF_ACCESS_TEAM_DOMAIN: z.string().optional(),
+    CF_ACCESS_AUD: z.string().optional(),
     BILLING_ISSUER_NAME: z.string().max(80).optional(),
     BILLING_ISSUER_LINES: z.string().max(400).optional(),
   })
@@ -43,6 +47,18 @@ const schema = z
       "PROOF_R2_ACCESS_KEY_ID",
       "PROOF_R2_SECRET_ACCESS_KEY",
     ] as const;
+    try {
+      accessConfigFromEnv({
+        CF_ACCESS_TEAM_DOMAIN: value.CF_ACCESS_TEAM_DOMAIN,
+        CF_ACCESS_AUD: value.CF_ACCESS_AUD,
+      });
+    } catch (error) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["CF_ACCESS_TEAM_DOMAIN"],
+        message: error instanceof Error ? error.message : "Invalid Cloudflare Access settings.",
+      });
+    }
     const missing = proof.filter((k) => !value[k]);
     if (missing.length > 0 && missing.length < proof.length) {
       for (const k of missing) {
@@ -67,6 +83,8 @@ const parsed = schema.safeParse({
   PROOF_R2_ACCESS_KEY_ID: process.env.PROOF_R2_ACCESS_KEY_ID || undefined,
   PROOF_R2_SECRET_ACCESS_KEY: process.env.PROOF_R2_SECRET_ACCESS_KEY || undefined,
   PAYSTACK_SECRET_KEY: process.env.PAYSTACK_SECRET_KEY || undefined,
+  CF_ACCESS_TEAM_DOMAIN: process.env.CF_ACCESS_TEAM_DOMAIN || undefined,
+  CF_ACCESS_AUD: process.env.CF_ACCESS_AUD || undefined,
   BILLING_ISSUER_NAME: process.env.BILLING_ISSUER_NAME || undefined,
   BILLING_ISSUER_LINES: process.env.BILLING_ISSUER_LINES || undefined,
 });

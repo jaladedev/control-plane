@@ -2,9 +2,11 @@
 
 Plan milestone M6. The rule is **new key in, check, old key out**: the old key is revoked at its
 source only after the school is healthy on the new one. The dashboard holds none of these values.
-They live in the worker's environment (`SCHOOL_DB_URLS`, `SCHOOL_APP_ENVS`; interim, until Infisical),
-and **Apply settings** (school page, owner only, type the school's name) tells the worker to put the
-current `SCHOOL_APP_ENVS` entry onto the running container.
+They live in Infisical, or in the worker's environment (`SCHOOL_DB_URLS`, `SCHOOL_APP_ENVS`), see
+`docs/secrets.md`. **Apply settings** (school page, owner only, type the school's name) tells the worker
+to put the school's current settings (its `SCHOOL_APP_ENVS` entry, or its Infisical folder) onto the
+running container. Wherever they live, the steps below are the same; with Infisical, "restart the
+worker" is not needed, because a change is picked up within a minute.
 
 ## What Apply settings does
 
@@ -34,11 +36,11 @@ One attempt only: a failed apply is never retried by itself.
 ## If it goes wrong
 
 - **"The old settings are running again, so do not revoke the old keys."** The new settings were bad.
-  The school is on the old ones. Fix the entry in `SCHOOL_APP_ENVS`, restart the worker, apply again.
+  The school is on the old ones. Fix the entry in `SCHOOL_APP_ENVS` (restart the worker) or in Infisical, then apply again.
 - **"The new settings are running, but the school does not look right."** The container is healthy on
   the new settings but the outside check failed (usually a service role key that does not work). The old
-  settings are **not** restored automatically. Put the previous values back in `SCHOOL_APP_ENVS`,
-  restart the worker, apply again, and only then investigate.
+  settings are **not** restored automatically. Put the previous values back in `SCHOOL_APP_ENVS` (restart the worker) or in
+  Infisical, apply again, and only then investigate.
 - **"Nothing was changed."** A check failed before any restart (an R2 key that is refused, or a claim key
   whose public half is not registered). The school is untouched. For the claim key, add the public key under
   **Payment claim keys**, then apply again.

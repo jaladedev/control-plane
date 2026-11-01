@@ -20,7 +20,8 @@ worker does everything else, from its own environment.
    - `SCHOOL_APP_ENVS`: the settings its container starts with (Supabase URL and keys,
      R2 endpoint, bucket and key, `IMPERSONATION_SIGNING_SECRET`; optionally Paystack,
      Resend, Telegram, `CONTROL_PLANE_URL` with `CLAIM_SIGNING_KEY`). Restart the worker.
-   - Interim, until the plan's Infisical is built (plan section 3).
+   - Or, with Infisical (`docs/secrets.md`), the same values in the school's folder
+     (`DATABASE_URL` plus the container settings) instead of these two env settings.
 3. **The registry row matches.** If **Supabase project ref** or **R2 bucket** is filled in under
    Details, the settings must agree with it. This catches another school's project pasted in.
 4. **DNS.** The school's hostname points at the server. The proxy gets its certificate on the
@@ -69,5 +70,6 @@ and delete its project.
 - The temporary password is in your Telegram chat. Anyone who can read that chat can sign in as the
   admin until the password is changed at first sign-in, so delete the message once you have passed it on.
 - Changing a running school's settings later (rotating a key) is **Apply settings**, see `docs/key-rotation.md`.
-- The container settings are plain environment values on the worker, like `SCHOOL_DB_URLS`.
-  That is the plan's "interim" state; replace with Infisical before hosting more schools.
+- The container settings are plain environment values on the worker, like `SCHOOL_DB_URLS`,
+  unless the worker is set up to read them from Infisical (`docs/secrets.md`), which is the better
+  choice before hosting more schools.
